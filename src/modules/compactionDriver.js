@@ -1,4 +1,4 @@
-// 旧驱动与分层驱动共用压力口径和摘要结果记录；只统计本插件发起的动作。
+// The legacy and layered drivers share the pressure computation and summary-outcome recording; only actions started by this plugin are counted.
 export function sessionEvents(session) {
   try {
     return typeof session?.snapshotEvents === 'function' ? session.snapshotEvents() : session?.events ?? null
@@ -35,7 +35,7 @@ export function recordCompression(stats, agent, controller, stage, status, detai
   })
 }
 
-// 30 秒内，同一份历史上的无效摘要不重复提交；不消耗成功配额。
+// Within 30 seconds, an ineffective summary on the same history is not resubmitted; it does not consume the success quota.
 export function retryKey(session, pressure) {
   const events = sessionEvents(session)
   return JSON.stringify([pressure.totalTokens, pressure.window, events?.length, events?.at(-1)?.seq])
@@ -46,7 +46,7 @@ export async function runSummary({ agent, state, controller, timeoutMs, compacti
   const started = Date.now()
   const abort = new AbortController()
   state.abort = abort
-  const timer = setTimeout(() => abort.abort(new DOMException('压缩超时', 'TimeoutError')), timeoutMs)
+  const timer = setTimeout(() => abort.abort(new DOMException('compaction timed out', 'TimeoutError')), timeoutMs)
   timer.unref?.()
   const details = () => ({
     startedAt: new Date(started).toISOString(), durationMs: Date.now() - started,
@@ -63,7 +63,7 @@ export async function runSummary({ agent, state, controller, timeoutMs, compacti
       return { ok: false, code: 'noop' }
     }
     if (typeof result !== 'object' || Array.isArray(result)) {
-      throw Object.assign(new Error('compactNow 未返回有效结果'), { code: 'result' })
+      throw Object.assign(new Error('compactNow returned no valid result'), { code: 'result' })
     }
     bumpCompression(stats, agent, prefix + (controller === 'layered' ? '.lossy' : '.completed'))
     recordCompression(stats, agent, controller, 'summary', 'success', { ...details(), modelCall: true })
@@ -86,7 +86,7 @@ export async function runSummary({ agent, state, controller, timeoutMs, compacti
   }
 }
 
-// 可选注入服务；返回的 dispose 会释放注入监听。卸载后不再接收晚到服务。
+// Optional injected services; the returned dispose releases the injection listeners. After unload, late services are no longer accepted.
 export function compressionServices(ctx, names) {
   const services = {}
   let alive = true
@@ -96,11 +96,11 @@ export function compressionServices(ctx, names) {
       if (!alive) return
       for (const name of names) services[name] = svc[name]
     })
-  } catch { /* 缺少服务时状态明确显示 unavailable */ }
+  } catch { /* when a service is missing the status clearly shows unavailable */ }
   return {
     get(name, agent) {
       if (!alive) return undefined
-      // 摘要和清理属于当前 Agent 的隔离预设；不能缓存或借用其他预设。
+      // Summarization and cleanup belong to the current agent's isolated preset; do not cache or borrow from other presets.
       if (agent && (name === 'compaction' || name === 'toolResultPruner')) {
         try {
           const presets = ctx.get?.('agentPresets')
@@ -108,10 +108,10 @@ export function compressionServices(ctx, names) {
             const scoped = presets.serviceFor(agent, name)
             if (scoped !== undefined || presets.composedPreset?.(agent.ctx) !== undefined) return scoped
           }
-        } catch { return undefined } // 解析失败时不退到可能属于其他配置的服务
+        } catch { return undefined } // on resolution failure, do not fall back to services that may belong to other configs
       }
       if (!services[name]) {
-        try { services[name] = ctx.get?.(name) } catch { /* 无注入权限 */ }
+        try { services[name] = ctx.get?.(name) } catch { /* no inject permission */ }
       }
       return services[name]
     },
@@ -129,7 +129,7 @@ export function createCompactionDriverModule(ctx, config, stats) {
   const onStatus = (payload) => {
     const agent = payload?.agent
     if (!active || !agent?.session || payload.status !== 'idle') return
-    const cfg = read() // 本次检查的不可变快照
+    const cfg = read() // an immutable snapshot for this check
     if (!cfg?.enabled) return
     const note = (status, detail) => recordCompression(stats, agent, 'legacy', 'check', status, detail)
     let st = states.get(agent.id)
@@ -173,14 +173,14 @@ export function createCompactionDriverModule(ctx, config, stats) {
   }
   const onDisposed = ({ agent } = {}) => {
     const st = states.get(agent?.id)
-    st?.abort?.abort(new DOMException('会话已关闭', 'AbortError'))
+    st?.abort?.abort(new DOMException('session closed', 'AbortError'))
     states.delete(agent?.id)
   }
   ctx.on('agent/status', onStatus)
   ctx.on('agent/disposed', onDisposed)
   return () => {
     active = false
-    for (const st of states.values()) st.abort?.abort(new DOMException('插件已卸载', 'AbortError'))
+    for (const st of states.values()) st.abort?.abort(new DOMException('plugin unloaded', 'AbortError'))
     states.clear()
     services.dispose()
     ctx.off?.('agent/status', onStatus)

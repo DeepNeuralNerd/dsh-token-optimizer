@@ -1,4 +1,4 @@
-// 真机环境验证 text2img 渲染链路(需在普通终端/真机权限运行)
+// real-machine verification of the text2img render chain (needs a normal terminal / real-machine permissions)
 import { spawn } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 const script = fileURLToPath(new URL('../scripts/render-text.ps1', import.meta.url))
 console.log('render script:', script)
-const text = '第 1 段:这是真实环境渲染测试内容。'.repeat(300)
+const text = 'part 1 :this is real-environment render-test content.'.repeat(300)
 const out = join(tmpdir(), `t2i-live-${Date.now()}.png`)
 console.log('out:', out)
 console.log('text chars:', text.length)

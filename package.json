@@ -1,7 +1,7 @@
 {
   "name": "@zoria-lind/dsh-token-optimizer",
   "version": "3.0.0",
-  "description": "分层 Token 优化管道:输出阶梯 / 工具裁剪与 MCP 懒加载 / 压缩设置与状态 / runtime 原文归档,基于 DSH 真实插件 API",
+  "description": "Layered token-optimization pipeline: output ladder / tool trimming with MCP lazy loading / compaction settings and status / runtime original-text archiving, built on the real DSH plugin API",
   "license": "MIT",
   "type": "module",
   "engines": {

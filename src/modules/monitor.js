@@ -1,13 +1,13 @@
-// 监控(monitor):会话结束(session/disposed)时输出本次会话的 token 节省统计。
+// monitor: on session end (session/disposed), print this session's token-savings statistics.
 //
-// 数据来源:stats 计数器的 snapshot(各模块累加的 savedChars/次数)+
-// 可选 ctx.tokenMeter(DSH 内置计量,存在时取 measure 数据)。
-// v2 新增:监听 session/event 聚合 assistant/message 的 data.usage,期末报告
-// 真实模型用量与缓存命中率(DeepSeek 磁盘前缀缓存,cacheReadTokens 即命中部分,
-// 命中率 = cacheRead / (input + cacheRead);inputTokens 按 API 惯例不含缓存读)。
-// 输出方式:console 日志(DSH 进程可见);showInChat 时通过会话追加一条消息。
+// Data sources: the stats counter snapshot (savedChars/counts accumulated by each module) +
+// optional ctx.tokenMeter (DSH's built-in metering; when present, its measure data is used).
+// Added in v2: listen to session/event to aggregate data.usage from assistant/message events, reporting at session end
+// the real model usage and cache hit rate (DeepSeek's disk prefix cache; cacheReadTokens is the hit portion,
+// hit rate = cacheRead / (input + cacheRead); per API convention inputTokens excludes cache reads).
+// Output: console logs (visible to the DSH process); with showInChat, also appends a session message.
 
-// usage 键名兼容:snake_case / cached_tokens 等变体都取首个有值者
+// usage key compatibility: snake_case / cached_tokens and other variants all resolve to the first defined value
 function pickUsageField(u, ...names) {
   for (const name of names) {
     const v = u?.[name]
@@ -20,7 +20,7 @@ export function createMonitorModule(ctx, config, stats) {
   const listeners = []
   if (typeof ctx?.on !== 'function') return () => {}
 
-  // per-session usage 聚合(session/event 的 assistant/message 事件带 data.usage)
+  // per-session usage aggregation (assistant/message events on session/event carry data.usage)
   const usageBySession = new Map()
 
   const onSessionEvent = (session, event) => {
@@ -41,7 +41,7 @@ export function createMonitorModule(ctx, config, stats) {
     agg.cacheReadTokens += dCache
     agg.reasoningTokens += dReason
     agg.events += 1
-    // 注意:bump 是加法,传单事件增量而非累计值
+    // Note: bump is additive; pass the single-event delta, not the running total
     stats?.bump('monitor.usageEvents', 1)
     stats?.bump('monitor.inputTokens', dIn)
     stats?.bump('monitor.outputTokens', dOut)
@@ -51,41 +51,41 @@ export function createMonitorModule(ctx, config, stats) {
 
   const handler = async (session) => {
     const snapshot = stats.snapshot()
-    const lines = ['── dsh-token-optimizer 会话统计 ──']
+    const lines = ['\u2500\u2500 dsh-token-optimizer session statistics \u2500\u2500']
     for (const [key, value] of Object.entries(snapshot.counters)) {
       lines.push(`  ${key}: ${value}`)
     }
     const totalChars = snapshot.samples.reduce((sum, s) => sum + (s.savedChars ?? 0), 0)
-    if (totalChars > 0) lines.push(`  共节省约 ${totalChars.toLocaleString()} 字符(压缩/去重/采样/摘要)`)
+    if (totalChars > 0) lines.push(`  saved about ${totalChars.toLocaleString()} characters in total (compression/dedup/sampling/summarization)`)
 
-    // v2:模型真实用量与缓存命中率(会话内聚合的 usage)
+    // v2: real model usage and cache hit rate (usage aggregated within the session)
     const agg = usageBySession.get(session)
     if (agg && agg.events > 0) {
       const totalInput = agg.inputTokens + agg.cacheReadTokens
       const hitRate = totalInput > 0 ? `${((agg.cacheReadTokens / totalInput) * 100).toFixed(1)}%` : 'n/a'
-      lines.push(`  模型 usage: 请求 ${agg.events} 次, 输入 ${agg.inputTokens.toLocaleString()} / 缓存命中 ${agg.cacheReadTokens.toLocaleString()} / 输出 ${agg.outputTokens.toLocaleString()} token`)
-      lines.push(`  缓存命中率: ${hitRate}(= 缓存命中 / (输入 + 缓存命中))`)
-      if (agg.reasoningTokens > 0) lines.push(`  推理 token: ${agg.reasoningTokens.toLocaleString()}`)
+      lines.push(`  model usage: ${agg.events} requests, input ${agg.inputTokens.toLocaleString()} / cache hits ${agg.cacheReadTokens.toLocaleString()} / output ${agg.outputTokens.toLocaleString()} tokens`)
+      lines.push(`  cache hit rate: ${hitRate} (= cache hits / (input + cache hits))`)
+      if (agg.reasoningTokens > 0) lines.push(`  reasoning tokens: ${agg.reasoningTokens.toLocaleString()}`)
     }
 
-    // 尝试读取内置 token meter 数据(存在时)
+    // Try reading the built-in token meter data (when present)
     let meterLine = ''
     try {
       if (ctx.tokenMeter && typeof ctx.tokenMeter.measure === 'function') {
         const m = await ctx.tokenMeter.measure(session)
         if (m && typeof m.totalTokens === 'number') {
-          meterLine = `  上下文 surfaceTokens: ${m.surfaceTokens ?? '?'} / totalTokens: ${m.totalTokens}`
+          meterLine = `  context surfaceTokens: ${m.surfaceTokens ?? '?'} / totalTokens: ${m.totalTokens}`
           lines.push(meterLine)
         }
       }
     } catch {
-      // tokenMeter 不可用或失败:静默跳过
+      // tokenMeter unavailable or failed: skip silently
     }
 
     const report = lines.join('\n')
     console.log(report)
 
-    // showInChat:以用户消息形式追加到会话(轻量,失败不致命)
+    // showInChat: append to the session as a user message (lightweight; failure is not fatal)
     if (config.showInChat && session && typeof session.append === 'function') {
       try {
         session.append('user', {
@@ -93,7 +93,7 @@ export function createMonitorModule(ctx, config, stats) {
           source: { kind: 'plugin:dsh-token-optimizer' },
         })
       } catch {
-        // 追加失败不致命
+        // append failure is not fatal
       }
     }
     stats?.bump('monitor.reports', 1)

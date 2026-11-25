@@ -1,5 +1,5 @@
-// 核心逻辑单元测试(node --test)。
-// 直接调用模块内部压缩/指纹函数,不依赖 DSH 运行时。
+// core logic unittest(node --test).
+// call the modules' internal compression/fingerprint functions directly,no DSH runtime dependency.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -8,7 +8,7 @@ import { createStats } from '../src/stats.js'
 import { createOutputLadderModule } from '../src/modules/outputLadder.js'
 import { createCacheModule } from '../src/modules/cache.js'
 
-// 内容可能是 string 或 [{type:'text',text}] 数组,断言前统一抽取文本
+//  content may be string or [{type:'text',text}] array,extract text uniformly before assertions text
 function txt(content) {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
@@ -17,7 +17,7 @@ function txt(content) {
   return ''
 }
 
-// ---- 模拟最小 DSH ctx:只实现 on/off 记录 + 事件派发 ----
+// ---- minimal mock DSH ctx: on/off recording + event dispatch only ----
 function makeFakeCtx() {
   const handlers = new Map()
   return {
@@ -35,23 +35,23 @@ function makeFakeCtx() {
   }
 }
 
-test('resolveConfig 默认值与校验', () => {
+test('resolveConfig defaults and validation', () => {
   const cfg = resolveConfig({})
   assert.equal(cfg.outputLadder.structureThreshold, 10000)
   assert.equal(cfg.cache.ttl, 3600)
   assert.equal(cfg.compactionDriver.pressureRatio, 0.45)
   assert.throws(() => resolveConfig({ outputLadder: { bogus: 1 } }), /unknown key/)
   assert.throws(() => resolveConfig({ outputLadder: { structureThreshold: -5 } }), /must be a number/)
-  // v1 退役节静默忽略不抛(防炸插件树)
+  // v1 retired sections silently ignored without throwing(prevents taking down the plugin tree)
   assert.doesNotThrow(() => resolveConfig({ compress: { threshold: 1 }, dedup: {}, pruning: {}, sample: {} }))
 })
 
-test('outputLadder: 大 JSON 数组被采样压缩,小输出不动', async () => {
+test('outputLadder: large JSON arrays are sample-compressed,small outputs untouched', async () => {
   const ctx = makeFakeCtx()
   const stats = createStats()
   createOutputLadderModule(ctx, resolveConfig({}).outputLadder, stats)
 
-  // 构造 500 行 JSON 数组
+  // build 500  lines JSON array
   const rows = Array.from({ length: 500 }, (_, i) => ({ id: i, name: `item-${i}`, value: i * 10 }))
   const bigText = JSON.stringify(rows)
 
@@ -64,7 +64,7 @@ test('outputLadder: 大 JSON 数组被采样压缩,小输出不动', async () =>
   assert.ok(decision.content[0].text.length < bigText.length)
   assert.ok(stats.snapshot().counters['ladder.structured'] >= 1)
 
-  // 小输出不压缩
+  // small outputs are not compressed
   const small = { isError: false, value: [1, 2, 3], content: [{ type: 'text', text: '[1,2,3]' }] }
   const d2 = await ctx.emit('tools/post-execute', { name: 'grep' }, small, async () => ({ kind: 'accept' }))
   assert.equal(d2.kind, 'accept')
@@ -72,19 +72,19 @@ test('outputLadder: 大 JSON 数组被采样压缩,小输出不动', async () =>
   assert.equal(small.content[0].text, '[1,2,3]')
 })
 
-test('outputLadder: CSV 头尾保留', async () => {
+test('outputLadder: CSV head/tail retention', async () => {
   const ctx = makeFakeCtx()
   const stats = createStats()
-  // 100 行 CSV 约 1.2KB,低于默认阈值 10000 不会触发;调低阈值与头尾保留行数
+  // 100 CSV lines is about 1.2KB, below the default threshold 10000 so it does not trigger; lower the threshold and head/tail retention
   createOutputLadderModule(ctx, { ...resolveConfig({}).outputLadder, structureThreshold: 500, preserveHeadTail: 5 }, stats)
   const csv = ['id,name', ...Array.from({ length: 100 }, (_, i) => `${i},row-${i}`)].join('\n')
   const result = { isError: false, value: csv, content: [{ type: 'text', text: csv }] }
   const decision = await ctx.emit('tools/post-execute', { name: 'grep' }, result, async () => ({ kind: 'accept' }))
-  assert.match(decision.content[0].text, /行已省略/)
-  assert.match(decision.content[0].text, /id,name/) // 表头保留
+  assert.match(decision.content[0].text, / rows omitted/)
+  assert.match(decision.content[0].text, /id,name/) // header kept
 })
 
-test('cache: 暂停不安全复用，重复调用执行工具', async () => {
+test('cache: paused, unsafe reuse off, repeated calls execute the tool', async () => {
   const ctx = makeFakeCtx()
   const stats = createStats()
   let executions = 0
@@ -100,6 +100,6 @@ test('cache: 暂停不安全复用，重复调用执行工具', async () => {
   }
   await run()
   await run()
-  assert.equal(executions, 2) // 只读搜索依赖外部文件状态，每次重新执行
+  assert.equal(executions, 2) // read-only searches depend on external file state and re-execute every time
   assert.equal(stats.snapshot().counters['cache.hits'] ?? 0, 0)
 })

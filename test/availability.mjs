@@ -137,7 +137,7 @@ export async function runAvailabilityChecks(check) {
     const a = f.agent('filter'); await f.create(a)
     f.faults.restrict = true
     const out = await f.call(a, { names: ['mcp__srv__a'] })
-    check('TO01 failed filter never reports successful loading', !f.view(a).visible.has('mcp__srv__a') && !/已放行: mcp__srv__a/.test(out) && !f.stats.snapshot().counters['toolgate.mcpReleased'])
+    check('TO01 failed filter never reports successful loading', !f.view(a).visible.has('mcp__srv__a') && !/Released: mcp__srv__a/.test(out) && !f.stats.snapshot().counters['toolgate.mcpReleased'])
     f.faults.restrict = false
     await f.call(a, { names: ['mcp__srv__a'] })
     check('TO01 failed loading can retry without a false checkpoint', f.view(a).visible.has('mcp__srv__a'))
@@ -181,7 +181,7 @@ export async function runAvailabilityChecks(check) {
     const parent = f.agent('parent'); await f.create(parent)
     const child = f.agent('child', parent); await f.create(child)
     const out = await f.call(child, { names: ['mcp__srv__a'] })
-    check('TO01 child does not bypass parent gate or report false success', !f.view(child).visible.has('mcp__srv__a') && !/已放行: mcp__srv__a/.test(out))
+    check('TO01 child does not bypass parent gate or report false success', !f.view(child).visible.has('mcp__srv__a') && !/Released: mcp__srv__a/.test(out))
     await f.call(parent, { names: ['mcp__srv__a'] }); await f.call(child, { names: ['mcp__srv__a'] })
     check('TO01 child can load after parent admits capability', f.view(child).visible.has('mcp__srv__a'))
     f.stop()

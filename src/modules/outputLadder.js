@@ -1,24 +1,24 @@
-// 输出阶梯(outputLadder):tools/post-execute 单次遍历,按决策表分流处理工具结果投影。
+// outputLadder: a single pass on tools/post-execute that routes tool-result projections through a decision table.
 //
-// 合并了 v1 的三个模块并修正其问题:
-//   - compress(结构压缩)/ sample(采样)迁移至此,分工具类型生效
-//   - 原 pruning 的"截断"意图改为出生点处理(v1 挂在 agent/pre-step,但那里
-//     永远看不到历史工具结果,实际是死代码)
-//   - sample 原阈值 50000 字符被核心 spill(50000 字节,链最外层先跑)架空,
-//     这里改为 8000 字符、只对 shell 类工具生效,填补 8k-50k 的裸奔区间
+// Merges v1's three modules and fixes their problems:
+//   - compress (structural compression) / sample (sampling) moved here, applied per tool type
+//   - the old pruning "truncation" intent became birth-point processing (v1 hooked agent/pre-step, but there
+//     it could never see historical tool results; it was effectively dead code)
+//   - sample's original 50000-character threshold was hollowed out by the core spill (50000 bytes, outermost in the chain and running first);
+//     this now uses 8000 characters for shell-type tools only, covering the unprotected 8k-50k band
 //
-// 分流决策表(按序判定,首中即返回;每条替换都有"更短才替换"守卫):
-//   1. read 类工具(首次读完整保留,重复读由 fileDiff 管)→ 放行
-//   2. 无文本块 → 放行
-//   3. result.isError → 错误摘要(errorSummaryChars),错误文本常是超长 traceback,
-//      且结构压缩会破坏错误语义,所以必须最先处理
-//   4. >= structureThreshold 且为 JSON 数组/CSV → 结构感知压缩,原文落盘可逆。
-//      在字节判断之前:结构化压缩对 JSON/CSV 的信息密度远高于核心 spill 的
-//      头尾预览;先压缩后 spill 看到的就是小内容,不会重复 spill
-//   5. >= spillBytes 字节 → 放行,交给核心 spill(链最外层兜底;非结构化大输出
-//      走它的头尾预览 + 落盘定位符)
-//   6. shell 类工具且 >= shellThreshold → 头尾+等距采样(带行号),原文落盘可逆
-//   7. 其余 → 放行
+// Routing decision table (evaluated in order, first match returns; every replacement has a "only replace when shorter" guard):
+//   1. read-type tools (first read kept in full; repeated reads are fileDiff's job) -> pass through
+//   2. no text blocks -> pass through
+//   3. result.isError -> error summary (errorSummaryChars); error text is often a very long traceback,
+//      and structural compression would break its semantics, so it must be handled first
+//   4. >= structureThreshold and JSON array/CSV -> structure-aware compression; the original is saved to disk, reversible.
+//      Ahead of the byte check: structural compression keeps JSON/CSV information density far higher than the core spill's
+//      head/tail preview; compressing first means spill then sees small content and does not spill again
+//   5. >= spillBytes -> pass through to the core spill (the chain's outermost fallback; unstructured large outputs
+//      get its head/tail preview + on-disk locator)
+//   6. shell-type tool and >= shellThreshold -> head/tail + evenly spaced sampling (with line numbers); the original is saved to disk, reversible
+//   7. everything else -> pass through
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -30,7 +30,7 @@ function ensureDir() {
   try {
     mkdirSync(ORIGINAL_DIR, { recursive: true })
   } catch {
-    // 目录不可写时静默降级:压缩不落盘,仍可工作(仅不可还原)
+    // Degrade silently when the directory is not writable: compression still works without saving originals (only unrecoverable)
   }
 }
 
@@ -42,7 +42,7 @@ function toText(blocks) {
   return textBlocks(blocks).map((block) => block.text).join('\n')
 }
 
-// 折叠投影:replacement 只进第一个 text 块,其余 text 块丢弃(避免多块时标记重复出现)
+// Folded projection: the replacement goes into the first text block only; other text blocks are dropped (so the marker never repeats across blocks)
 function foldTextBlocks(blocks, replacement) {
   let replacedFirst = false
   return (blocks ?? []).flatMap((block) => {
@@ -67,7 +67,7 @@ function saveOriginal(exec, text) {
   }
 }
 
-// ---- JSON 结构压缩(自 v1 compress 迁移) ----
+// ---- JSON structural compression (migrated from v1 compress) ----
 function compressJsonArray(text, { compressionRate, preserveHeadTail }) {
   let parsed
   try {
@@ -78,14 +78,14 @@ function compressJsonArray(text, { compressionRate, preserveHeadTail }) {
   if (!Array.isArray(parsed) || parsed.length <= 4) return null
 
   const total = parsed.length
-  // 采样数上限 500:再大的数组摘要也封顶(约 45k 字符),避免超大数组
-  // 把压缩结果本身撑回 spill 区间
+  // Sampling cap of 500: even larger arrays are capped in the summary (about 45k characters), so a huge array
+  // cannot push the compressed result itself back into spill territory
   const sampleCount = Math.max(2, Math.min(total, 500, Math.ceil(total * compressionRate)))
   const step = total / sampleCount
   const picked = []
   for (let i = 0; i < sampleCount; i++) picked.push(parsed[Math.min(total - 1, Math.floor(i * step))])
 
-  // 提取 schema:取首元素的键集合作为列名
+  // Extract the schema: the first element's key set becomes the column names
   const first = parsed[0]
   const columns = first && typeof first === 'object' && !Array.isArray(first) ? Object.keys(first) : null
 
@@ -97,13 +97,13 @@ function compressJsonArray(text, { compressionRate, preserveHeadTail }) {
     sample: picked,
   }
   const out = JSON.stringify(summary)
-  if (out.length >= text.length) return null // 没省下字符就不压缩
+  if (out.length >= text.length) return null // no compression unless characters are actually saved
   return out
 }
 
-// ---- CSV 结构压缩(自 v1 compress 迁移) ----
-// v1 的缺陷:任何多行文本都会被当 CSV 压缩(含 pwsh 输出)。这里加列一致性
-// 启发式:表头含分隔符且前几条 body 行列数一致才算 CSV。
+// ---- CSV structural compression (migrated from v1 compress) ----
+// v1's flaw: any multi-line text was treated as CSV (including pwsh output). A column-consistency
+// heuristic is added here: only a delimiter-bearing header plus matching column counts in the first body lines counts as CSV.
 function compressCsv(text, { preserveHeadTail }) {
   const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0)
   if (lines.length <= 8) return null
@@ -118,19 +118,19 @@ function compressCsv(text, { preserveHeadTail }) {
   const total = body.length
   const head = body.slice(0, preserveHeadTail)
   const tail = body.slice(-preserveHeadTail)
-  const out = [header, `[... ${total - head.length - tail.length} 行已省略,原始数据已存盘 ...]`, ...head, ...tail].join('\n')
+  const out = [header, `[... ${total - head.length - tail.length} rows omitted, original data saved to disk ...]`, ...head, ...tail].join('\n')
   if (out.length >= text.length) return null
   return out
 }
 
-// ---- 错误摘要(新增,替代 v1 pruning 的"删旧失败输出"意图) ----
+// ---- Error summary (new; replaces v1 pruning's "delete stale failure output" intent) ----
 function summarizeError(text, maxChars) {
   if (text.length <= maxChars) return null
   const head = text.slice(0, maxChars)
-  return `${head}\n\n[... dsh-token-optimizer outputLadder: 错误输出已摘要(原 ${text.length} 字符,保留前 ${maxChars} 字符) ...]`
+  return `${head}\n\n[... dsh-token-optimizer outputLadder: error output summarized (was ${text.length} characters, first ${maxChars} characters kept) ...]`
 }
 
-// ---- shell 输出采样(自 v1 sample 迁移,只对 shell 类工具,新增落盘可逆) ----
+// ---- Shell output sampling (migrated from v1 sample, shell-type tools only; now reversible via on-disk originals) ----
 function sampleShell(text, config) {
   const lines = text.split(/\r?\n/)
   if (lines.length <= config.headLines + config.tailLines + 2) return null
@@ -150,7 +150,7 @@ function sampleShell(text, config) {
   const tailNumbered = numbered(tail, lines.length - tail.length)
 
   return [
-    `[dsh-token-optimizer outputLadder: 共 ${lines.length} 行,已采样展示头 ${config.headLines} 行 + 等距 ${sampled.length} 行 + 尾 ${config.tailLines} 行]`,
+    `[dsh-token-optimizer outputLadder: ${lines.length} lines total; sampled view = head ${config.headLines} lines + evenly spaced ${sampled.length} lines + tail ${config.tailLines} lines]`,
     ...headNumbered,
     ...sampled,
     ...tailNumbered,
@@ -168,41 +168,41 @@ export function createOutputLadderModule(ctx, config, stats) {
     const decision = await next()
     if (!decision || decision.kind !== 'accept') return decision
 
-    // 1) read 类工具豁免:首次读完整保留,重复读由 fileDiff 管
+    // 1) read-type tools are exempt: first read kept in full; repeated reads are fileDiff's job
     if (readTools.has(exec?.name)) return decision
 
-    // T7(层序敏感写法):以 decision.content ?? result.content 为基线——
-    // 本插件在 profile bundles 里偏内层,更外层 handler(better-edit/spill-policy 等)
-    // 可能已经改写过 content;基线取 decision 才不会覆盖掉内层改写。
-    // 返回必须 spread decision:保留 additionalContexts 等下游字段(accept 路径下
-    // 内核会拼接 result 与 decision 的 contexts,result 在前)。
+    // T7 (layer-order-sensitive): use decision.content ?? result.content as the baseline --
+    // this plugin sits toward the inner layers of the profile bundles, and outer handlers (better-edit/spill-policy, etc.)
+    // may already have rewritten content; taking the baseline from decision avoids clobbering inner rewrites.
+    // The return must spread decision: it keeps downstream fields such as additionalContexts (on the accept path
+    // the kernel concatenates result and decision contexts, result first).
     const blocks = decision.content ?? result?.content
     const text = toText(blocks)
-    // 2) 无文本块
+    // 2) no text blocks
     if (text.length === 0) return decision
 
     let replacement = null
     let branch = null
 
-    // 3) 错误结果:摘要化(必须最先,错误文本常是超长 traceback)
+    // 3) error results: summarize (must be first; error text is often a very long traceback)
     if (result?.isError === true) {
       replacement = summarizeError(text, config.errorSummaryChars)
       branch = 'error'
     }
 
-    // 4) 结构感知压缩(JSON 数组/CSV),在字节判断之前:压缩后 spill 不会再介入
+    // 4) structure-aware compression (JSON array/CSV), before the byte check: after compression spill will not intervene again
     if (!replacement && text.length >= config.structureThreshold) {
       replacement = compressJsonArray(text, config) ?? compressCsv(text, config)
       branch = 'structured'
     }
 
-    // 5) >= spillBytes 字节:交给核心 spill(链最外层兜底),不重复做
+    // 5) >= spillBytes: leave it to the core spill (the chain's outermost fallback); do not duplicate it
     if (!replacement && Buffer.byteLength(text, 'utf8') >= config.spillBytes) {
       stats?.bump('ladder.spillSkip', 1)
       return decision
     }
 
-    // 6) shell 类工具输出采样
+    // 6) shell-type tool output sampling
     if (!replacement && shellTools.has(exec?.name) && text.length >= config.shellThreshold) {
       replacement = sampleShell(text, config)
       branch = 'shell'
@@ -210,15 +210,15 @@ export function createOutputLadderModule(ctx, config, stats) {
 
     if (!replacement || replacement.length >= text.length) return decision
 
-    // 原文落盘(可逆),标记带原始路径
+    // Save the original to disk (reversible); the marker carries the original path
     let marker
     if (config.saveOriginal) {
       const savedFile = saveOriginal(exec, text)
-      marker = savedFile ? `(原始数据:${savedFile})` : '(原始数据未落盘)'
+      marker = savedFile ? `(original data: ${savedFile})` : '(original data not saved to disk)'
     } else {
-      marker = '(saveOriginal 关闭)'
+      marker = '(saveOriginal off)'
     }
-    const final = `${replacement}\n\n[已由 dsh-token-optimizer outputLadder.${branch} 处理 ${marker}]`
+    const final = `${replacement}\n\n[processed by dsh-token-optimizer outputLadder.${branch} ${marker}]`
 
     const savedChars = text.length - final.length
     if (savedChars <= 0) return decision
@@ -227,7 +227,7 @@ export function createOutputLadderModule(ctx, config, stats) {
     stats?.bump('ladder.savedChars', savedChars)
     stats?.addSample({ module: 'outputLadder', tool: exec?.name, branch, savedChars })
 
-    // T7:spread decision 透传 additionalContexts 等;content 以基线重建
+    // T7: spread decision to pass through additionalContexts etc.; content is rebuilt from the baseline
     return {
       ...decision,
       content: foldTextBlocks(blocks, final),

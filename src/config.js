@@ -1,113 +1,113 @@
 import { isAbsolute } from 'node:path'
 
-// 配置默认值与校验。与方案文档 4.1 的 YAML 结构对齐,但只保留真实落地的键。
+// Config defaults and validation. Aligned with section 4.1 of the design document's YAML structure, keeping only keys that actually landed.
 
 export const DEFAULT_CONFIG = {
   archive: { enabled: false, directory: '', previousDirectories: [], retryGeneration: 0 },
-  // ===== 第1层:输入预处理 =====
-  // 长文本→图片:超长自然语言文本渲染成图,经 vision API 读图得摘要后以文字替换进上下文。
-  // 可靠性修复(2026-09-03 对照实验):flash-vision-exp 读"高密度大页"会整篇脑补
-  // (小红书/浪潮AI服务器/法硕考研三次事故),根因是单页信息密度过高。
-  // 实验结论:字号 24 + 页高 3000(约每页 ~1k 字,6.4k 字 → 6 页)三测三中,
-  // 忠实度稳定(关键词 8/8、7/8);字号 16 + 页高 7800(2 页)持续脑补。
-  // 因此默认小页分页(pageFontSize 24 / pageMaxHeight 3000);摘要仍标注"可能不准确",
-  // 细节引用前必须核对落盘原文。
+  // ===== Layer 1: input pre-processing =====
+  // text2img: render very long natural-language text into images, summarize via a vision API, and replace the text in context with the summary.
+  // Reliability fix (2026-09-03 controlled experiments): flash-vision-exp hallucinated whole pages at "high-density large pages"
+  // (three incidents: Xiaohongshu / Inspur AI server / law-master exam prep); the root cause was excessive per-page information density.
+  // Experiment conclusion: font 24 + page height 3000 (~1k characters/page; 6.4k characters -> 6 pages) passed 3/3 runs,
+  // with stable fidelity (keyword recall 8/8, 7/8); font 16 + page height 7800 (2 pages) hallucinated consistently.
+  // Hence the default small-page pagination (pageFontSize 24 / pageMaxHeight 3000); summaries are still flagged "may be inaccurate",
+  // and details must be checked against the saved original before quoting.
   text2img: {
     enabled: true,
-    threshold: 1000,           // 字符数阈值,达到即弹窗询问(不限内容类型)
-    // v2.1 询问策略:达阈值一律询问,内容类型决定推荐项(首位)与超时默认值——
-    // 自然语言→转图摘要;结构性强→直接阅读原文。堵上 v2.0"纯散文自动转图
-    // 导致读不到原文细节"的坑(实际事故:让 DSH 看方案细节结果只读到摘要)。
-    askOnSkip: true,           // false = 关闭询问,回退 v2.0 自动行为(自然语言自动转图/结构性强跳过)
-    askTimeoutMs: 120000,      // 询问超时(毫秒),超时按内容类型默认执行(2 分钟)
-    maxAsksPerSession: 0,      // 每会话弹窗次数上限(0=不限);超过后按内容类型默认静默执行。
-                               // 每个新长文本都会弹窗的降噪阀(实测:连测 4 段文本 = 4 次弹窗,嫌多可设 3~5)
-    summaryCache: true,        // 内容 hash → 摘要磁盘缓存,跨会话命中 0 API 调用
-    dynamicResolution: true,   // 按字数分档渲染尺寸(见 resolutionTiers);false 用 renderWidth+分页
-    renderWidth: 1200,         // dynamicResolution=false 时的固定渲染宽度
-    // 动态分辨率分档(2026-09-09 实测校准):
-    // 实测 Microsoft YaHei 在 GDI+ 下行高 ≈1.9×字号(24px→43px,36px→70px),
-    // 中英混排换行还偏碎,导致 640×360/1280×720 原分档只有 ~107/~417 字/页,页数翻倍。
-    // 按"改画布不动渲染"原则放大尺寸(字形/行距/换行全部不变,已验证的保真度继续有效):
-    // 800×450 ≈ 240 字/页、1440×810 ≈ 920 字/页(回到 v2.0 三测三中的 ~1千字/页 安全水平)、
-    // 1920×1080@36 号 ≈ 420 字/页;幻觉事故密度 ~3.2千字/页,各档均有 3.5 倍以上余量。
+    threshold: 1000,           // character threshold; reaching it triggers the ask (any content type)
+    // v2.1 asking strategy: always ask at the threshold; content type decides the recommended option (first) and the timeout default --
+    // natural language -> image summary; strongly structural -> read the original. Closes v2.0's hole where "auto-converting prose
+    // left the model unable to read original details" (real incident: DSH was asked to review plan details but only saw the summary).
+    askOnSkip: true,           // false = disable asking; v2.0 automatic behavior (natural language auto-converts; strongly structural skips)
+    askTimeoutMs: 120000,      // ask timeout in milliseconds; on timeout the content-type default applies (2 minutes)
+    maxAsksPerSession: 0,      // per-session cap on asks (0 = unlimited); beyond it the content-type default applies silently.
+                               // Noise valve for the popup-on-every-new-long-text behavior (measured: 4 texts in a row = 4 popups; set 3-5 if that is too many)
+    summaryCache: true,        // content hash -> on-disk summary cache; cross-session hits cost 0 API calls
+    dynamicResolution: true,   // tiered render size by character count (see resolutionTiers); false uses renderWidth + pagination
+    renderWidth: 1200,         // fixed render width when dynamicResolution=false
+    // Dynamic resolution tiers (calibrated by measurement on 2026-09-09):
+    // Measured: Microsoft YaHei under GDI+ has line height ~1.9x font size (24px -> 43px, 36px -> 70px),
+    // and mixed CN/EN text wraps even more, so the old 640x360/1280x720 tiers held only ~107/~417 characters/page, doubling page counts.
+    // Sizes were scaled by the "change the canvas, not the rendering" rule (glyphs/leading/wrapping unchanged; verified fidelity still holds):
+    // 800x450 is about 240 characters/page, 1440x810 is about 920 characters/page (back to the v2.0 3/3-pass safe ~1,000 characters/page level),
+    // 1920x1080@36 is about 420 characters/page; hallucination incidents occurred at ~3,200 characters/page, so every tier keeps a 3.5x margin.
     resolutionTiers: [
       { maxChars: 2000, width: 800, height: 450, fontSize: 24 },
       { maxChars: 6000, width: 1440, height: 810, fontSize: 24 },
       { maxChars: Infinity, width: 1920, height: 1080, fontSize: 36 },
     ],
-    pageFontSize: 24,          // 渲染字号(dynamicResolution=false 时用)
-    pageMaxHeight: 3000,       // 单页最大高度(dynamicResolution=false 时用)
+    pageFontSize: 24,          // render font size (used when dynamicResolution=false)
+    pageMaxHeight: 3000,       // maximum page height (used when dynamicResolution=false)
     visionModel: 'deepseek-v4-flash-vision-exp',
-    baseUrl: 'https://api.deepseek.com/v1',  // OpenAI 兼容端点
-    prompt: '请阅读全部图片页中的文字,输出一份简洁准确的中文摘要,保留关键数字、专有名词和结构要点。要求:①重点概括正文的实质内容,忽略标题、作者、链接、来源、版权声明等元信息(这类信息最多一句话带过,禁止当成核心内容);②内容跨多页时逐页阅读、完整覆盖,不得只概括开头几页;③只概括原文中出现的内容,不得添加原文没有的信息;无法识别或模糊的部分标注为[无法识别],不要猜测。',
-    pagesPerBatch: 4,          // 分批摘要:每批最多送这么多页给 vision。
-                               // 实测 flash-vision 一次读 8+ 页会只概括开头几页并脑补"原文在此处结束",
-                               // 正文后续全丢(知乎长文事故第二形态)。分批强制全覆盖,再纯文本合并。
-                               // 成本:每批 1 次 Flash vision 调用 + 1 次纯文本合并调用。
-    maxSummaryChars: 2000,     // 摘要上限(替换进上下文的文字长度)
-    maxSummaryRatio: 0.4,      // 摘要上限随输入缩放:实际上限 = min(maxSummaryChars, 输入字数×该比)。
-                               // 保证替换后一定比原文短——否则 v2.1 短文本会因摘要超长而保留原文、vision 白烧。
-    reasoningBudget: 16384,    // vision 推理模型的思考 token 预留(max_tokens = 摘要上限 + 该预算;
-                               // 预算不足时思考吃光额度返回空摘要——真实事故:4096 不够,51 秒思考后 content 为空)
-    saveOriginal: true,        // 原始文本落盘(可逆)
+    baseUrl: 'https://api.deepseek.com/v1',  // OpenAI-compatible endpoint
+    prompt: 'Read the text in all image pages and produce a concise, accurate summary in the language of the source, keeping key numbers, proper nouns, and structural points. Requirements: (1) focus on the substantive body content and ignore metadata such as titles, authors, links, sources, and copyright notices (at most one passing sentence; never treat them as core content); (2) when content spans multiple pages, read every page and cover them fully; never summarize only the opening pages; (3) summarize only what appears in the source and add nothing that is not there; mark illegible or unclear parts as [unreadable] instead of guessing.',
+    pagesPerBatch: 4,          // batched summarization: at most this many pages per vision batch.
+                               // Measured: flash-vision reading 8+ pages at once summarized only the first pages and invented that "the text ends here",
+                               // losing the rest (the second failure mode of the Zhihu long-post incident). Batching forces full coverage; then merge as plain text.
+                               // Cost: 1 Flash vision call per batch + 1 plain-text merge call.
+    maxSummaryChars: 2000,     // summary cap (length of text replacing the original in context)
+    maxSummaryRatio: 0.4,      // the cap scales with input: effective cap = min(maxSummaryChars, input characters x this ratio).
+                               // Guarantees the replacement is shorter than the original -- otherwise v2.1 short texts would keep the original because the summary runs long, burning vision for nothing.
+    reasoningBudget: 16384,    // thinking-token reserve for the vision reasoning model (max_tokens = summary cap + this reserve;
+                               // an insufficient reserve lets thinking exhaust the budget and return an empty summary -- real incident: 4096 was not enough and content came back empty after 51 seconds of thinking)
+    saveOriginal: true,        // save the original text to disk (reversible)
   },
-  // ===== v2 输出阶梯:post-execute 单次遍历分流(合并 v1 compress/sample/pruning 截断意图) =====
+  // ===== v2 outputLadder: one pass on post-execute routing (merges v1 compress/sample/pruning truncation intents) =====
   outputLadder: {
     enabled: true,
-    structureThreshold: 10000, // JSON 数组/CSV 结构压缩阈值(字符)
-    compressionRate: 0.5,      // JSON 采样率
-    preserveHeadTail: 1000,    // JSON/CSV 头尾保留量
-    shellTools: ['pwsh', 'bash', 'sh', 'powershell', 'zsh', 'cmd'], // shell 类工具(采样)
-    shellThreshold: 8000,      // shell 输出采样阈值(字符;核心 spill 管 >50000 字节)
-    headLines: 10,             // 采样头部保留行数
-    tailLines: 10,             // 采样尾部保留行数
-    sampleInterval: 20,        // 中间等距采样间隔
-    errorSummaryChars: 300,    // 错误结果摘要上限
-    spillBytes: 50000,         // 与核心 spill-policy maxInlineBytes 对齐,超限放行
-    readTools: ['read', 'read_image'], // 豁免工具:首次读完整保留
-    saveOriginal: true,        // 原文落盘(可逆)
+    structureThreshold: 10000, // JSON array/CSV structural compression threshold (characters)
+    compressionRate: 0.5,      // JSON sampling rate
+    preserveHeadTail: 1000,    // JSON/CSV head/tail retention
+    shellTools: ['pwsh', 'bash', 'sh', 'powershell', 'zsh', 'cmd'], // shell-type tools (sampled)
+    shellThreshold: 8000,      // shell-output sampling threshold (characters; the core spill handles >50000 bytes)
+    headLines: 10,             // head lines kept when sampling
+    tailLines: 10,             // tail lines kept when sampling
+    sampleInterval: 20,        // evenly spaced sampling interval for the middle
+    errorSummaryChars: 300,    // error-result summary cap
+    spillBytes: 50000,         // aligned with the core spill-policy maxInlineBytes; larger outputs pass through
+    readTools: ['read', 'read_image'], // exempt tools: first read kept in full
+    saveOriginal: true,        // originals saved to disk (reversible)
   },
-  // ===== v2 压缩调度器:idle 时按自定义压力比驱动核心 compaction(核心 0.8 阈值对 1M 窗口永远不触发) =====
+  // ===== v2 compaction driver: on idle, drive core compaction at a custom pressure ratio (the core 0.8 threshold never fires on a 1M window) =====
   compactionDriver: {
     enabled: true,
-    pressureRatio: 0.45,           // totalTokens / contextWindow 超过该比才触发
-    minTurns: 6,                   // 会话最少轮数(挡掉短命会话/子代理)
-    minTokens: 100000,             // 上下文最少 token(太小不值得压)
-    maxCompactionsPerSession: 3,   // 每会话压缩次数上限(防失控)
-    contextWindow: 1000000,        // fallback 窗口;优先读 request/context 事件
-    timeoutMs: 120000,             // 单次压缩超时
+    pressureRatio: 0.45,           // triggers only when totalTokens / contextWindow exceeds this ratio
+    minTurns: 6,                   // minimum session turns (filters out short-lived sessions/subagents)
+    minTokens: 100000,             // minimum context tokens (too small is not worth compacting)
+    maxCompactionsPerSession: 3,   // per-session compaction cap (prevents runaway)
+    contextWindow: 1000000,        // fallback window; the request/context event is preferred
+    timeoutMs: 120000,             // single-compaction timeout
   },
-  // ===== T4 分层压缩编排(0C 修正版:L0 观测 / L1 无损 prune / L2 有损 compactNow) =====
-  // 默认 enabled:false(灰度)。分层启用时运行端旁路旧驱动；设置页切换会原子保存两个开关:
-  // 旧驱动 0.45 命中即有损,会把 L1 的无损机会整个吃掉(内核 compaction-basic 本来是
-  // "测阈 → prune → 复测 → 仍超阈才有损"的两段式)。
+  // ===== T4 layered compaction orchestration (0C revision: L0 observe / L1 lossless prune / L2 lossy compactNow) =====
+  // Default enabled:false (canary). When layered mode is on, the runtime bypasses the legacy driver; the settings page saves both switches atomically:
+  // the legacy driver is lossy at 0.45 and would consume every L1 lossless opportunity (the kernel compaction-basic itself is
+  // a two-stage measure -> prune -> re-measure -> only then lossy process).
   layeredCompact: {
     enabled: false,
-    lowRatio: 0.4,                 // L0 观测层触发线(不降压力,只记账,禁止包装成"无损压缩")
-    midRatio: 0.5,                 // L1 工具历史清理触发线(ctx.toolResultPruner.pruneSession,真降分子)
-    highRatio: 0.65,               // L2 有损层触发线(compactNow;必须用 L1 复测后的 ratio 判定)
-    highTierTimeoutMs: 120000,     // compactNow 超时(AbortSignal.timeout;超时不是 cancelled)
-    highTierMaxPerSession: 2,      // 每会话有损压缩上限
-    sessionWindowFallback: 262144, // 取不到 request/context 事件时的窗口回落值(与路由默认同值)
-    pricing: {                     // T5 金额估算用(人民币/百万 token)
+    lowRatio: 0.4,                 // L0 observe line (no pressure reduction, bookkeeping only; must not be dressed up as "lossless compression")
+    midRatio: 0.5,                 // L1 tool-history cleanup line (ctx.toolResultPruner.pruneSession; actually reduces the numerator)
+    highRatio: 0.65,               // L2 lossy line (compactNow; must be judged on the ratio re-measured after L1)
+    highTierTimeoutMs: 120000,     // compactNow timeout (AbortSignal.timeout; a timeout is not a cancellation)
+    highTierMaxPerSession: 2,      // per-session lossy compaction cap
+    sessionWindowFallback: 262144, // window fallback when no request/context event is available (same as the router default)
+    pricing: {                     // for T5 cost estimation (CNY per million tokens)
       inputPerMillion: 0.8,
       cacheHitPerMillion: 0.23,
       outputPerMillion: 2.8,
     },
   },
-  // 结果缓存
-  // 暂停结果缓存：只读搜索仍依赖可变文件状态；旧 enabled:true 也不复用结果。
+  // Result cache
+  // Result caching is paused: read-only searches still depend on mutable file state; the old enabled:true did not reuse results either.
   cache: {
     enabled: false,
     ttl: 3600,
   },
-  // ===== 监控 =====
+  // ===== Monitor =====
   monitor: {
     enabled: true,
-    showInChat: true,          // 会话结束时输出节省统计
+    showInChat: true,          // print savings statistics at session end
   },
-  // ===== fileDiff 暂停：旧配置兼容保留，不能证明请求仍有基线时始终返回原文 =====
+  // ===== fileDiff paused: kept for old-config compatibility; always returns the original when a baseline cannot be proven =====
   fileDiff: {
     enabled: false,
     tools: ['read'],
@@ -116,18 +116,18 @@ export const DEFAULT_CONFIG = {
     contextLines: 3,
     collapseUnchanged: true,
   },
-  // ===== 工具 schema 按会话裁剪(默认关闭;启用后经 agent/created 对每个 agent 作用域生效) =====
-  // mcpLazy：发现工具注册成功后才隐藏 MCP，支持目录搜索/分页及按名加载；保留显式限制。
+  // ===== Per-session tool schema trimming (off by default; when on, applied per agent scope via agent/created) =====
+  // mcpLazy: MCP tools are hidden only after the discovery tool registers successfully, supporting catalog search/paging and load-by-name; explicit restrictions are kept.
   toolTrim: {
     enabled: false,
-    allow: null,               // null/省略=不限；[]=禁止所有继承工具
+    allow: null,               // null/omitted = unrestricted; [] = allow no inherited tools
     deny: [],
-    mcpLazy: true,              // MCP 工具懒加载(检测不到 mcp__* 工具时静默 no-op)
-    mcpPrefix: 'mcp__',         // MCP 工具名前缀(dsh-mcp-client 的公开名格式)
-    mcpLoadToolName: 'mcp_load_tools', // 放行元工具名
+    mcpLazy: true,              // MCP tool lazy loading (a silent no-op when no mcp__* tools are detected)
+    mcpPrefix: 'mcp__',         // MCP tool-name prefix (the public name format of dsh-mcp-client)
+    mcpLoadToolName: 'mcp_load_tools', // the release meta-tool name
   },
-  // ===== memory-bridge 联动占位(dsh-memory-bridge 阶段 3b 完成后开开关即可) =====
-  // 现阶段 enabled: false,不注册任何钩子,仅让配置节合法存在。
+  // ===== memory-bridge integration placeholder (flip it on once dsh-memory-bridge stage 3b lands) =====
+  // For now enabled:false registers no hooks; it only keeps the config section legal.
   memory_bridge: {
     enabled: false,
     sync_dir: '~/.dsh-memory',
@@ -146,13 +146,13 @@ const NUMERIC_KEYS = new Set([
   'pressureRatio', 'minTurns', 'minTokens', 'maxCompactionsPerSession', 'contextWindow', 'timeoutMs',
   'reasoningBudget', 'pageFontSize', 'pageMaxHeight',
   'askTimeoutMs', 'renderWidth', 'text2img_threshold', 'maxSummaryRatio', 'maxAsksPerSession', 'pagesPerBatch',
-  // T4 分层压缩扁平键( NUMERIC_KEYS 是全局扁平集合,子键名不得与既有键重名 )
+  // T4 layered-compaction flat keys (NUMERIC_KEYS is a global flat set; sub-key names must not collide with existing keys)
   'lowRatio', 'midRatio', 'highRatio', 'highTierTimeoutMs', 'highTierMaxPerSession', 'sessionWindowFallback',
 ])
 const STRING_KEYS = new Set(['directory', 'visionModel', 'baseUrl', 'prompt', 'sync_dir', 'compression_strategy'])
 const STRING_ARRAY_KEYS = new Set(['previousDirectories', 'tools', 'allow', 'deny', 'shellTools', 'readTools'])
 
-// 结构化值校验(超出数字/字符串/布尔的基础校验)
+// Structured value validation (beyond the basic number/string/boolean checks)
 const CUSTOM_VALIDATORS = {
   resolutionTiers(value) {
     if (!Array.isArray(value) || value.length === 0) {
@@ -172,14 +172,14 @@ const CUSTOM_VALIDATORS = {
         throw new Error('dsh-token-optimizer config: resolutionTiers maxChars must be strictly increasing')
       }
       prev = tier.maxChars
-      // DeepSeek 视觉 API 长边限制实测 ~8124,留安全余量
+      // the DeepSeek vision API long-side limit measured at ~8124; keep a safety margin
       if (Math.max(tier.width, tier.height) > 8000) {
         throw new Error('dsh-token-optimizer config: resolutionTier width/height must be <= 8000 (vision API long-side limit)')
       }
     }
   },
-  // T1:pricing 子对象走自定义校验(浅校验对子对象内层键零覆盖),校验通过后
-  // 返回深拷贝 + 冻结,避免"外层冻结内层仍是同引用可被改"的坑(08 §A13)
+  // T1: the pricing sub-object uses custom validation (shallow validation leaves zero coverage of inner keys); after it passes,
+  // it returns a deep copy + freeze, avoiding the trap where an outer freeze leaves the inner object mutable by shared reference (08 A13)
   pricing(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw new Error('dsh-token-optimizer config: "pricing" must be an object {inputPerMillion, cacheHitPerMillion, outputPerMillion}')
@@ -226,8 +226,8 @@ function resolveSection(section, defaults) {
       } else if (STRING_KEYS.has(key)) {
         if (typeof value !== 'string') throw new Error(`dsh-token-optimizer config: "${key}" must be a string`)
       } else if (CUSTOM_VALIDATORS[key]) {
-        // 校验器可返回深拷贝/规范化后的替换值;返回 undefined 则沿用原值。
-        // 已在此赋值 → continue 跳过循环尾的统一 out[key] = value(否则会被覆盖回去)
+        // A validator may return a deep-copied/normalized replacement; returning undefined keeps the original value.
+        // already assigned here -> continue skips the loop-tail out[key] = value (otherwise it would be overwritten back)
         const replacement = CUSTOM_VALIDATORS[key](value)
         out[key] = replacement !== undefined ? replacement : value
         continue
@@ -240,23 +240,23 @@ function resolveSection(section, defaults) {
   return Object.freeze(out)
 }
 
-// v1 退役节:用户配置里遗留时静默忽略 + 提示(绝不抛错——抛错会炸整个插件树)
+// v1 retired sections: silently ignored with a notice when left in user config (never throw -- a throw would take down the whole plugin tree)
 const LEGACY_SECTIONS = new Set(['compress', 'sample', 'pruning', 'dedup'])
 
 export function unwrapConfig(value) {
   return value && typeof value.get === 'function' ? value.get() : value
 }
 
-// 同时供启动、每次 idle 与 /token-status 使用；不改其它已冻结的模块配置。
+// Used at startup, on every idle, and by /token-status; does not modify other frozen module configs.
 export function resolveCompressionConfig(config = {}) {
   const compactionDriver = resolveSection(config.compactionDriver, DEFAULT_CONFIG.compactionDriver)
   const layeredCompact = resolveSection(config.layeredCompact, DEFAULT_CONFIG.layeredCompact)
   const { lowRatio: low, midRatio: mid, highRatio: high } = layeredCompact
   if (!(0 < low && low <= mid && mid < high && high < 1)) {
-    throw new Error('压缩阈值必须满足 0 < 观测线 ≤ 清理线 < 摘要线 < 100%')
+    throw new Error('compaction thresholds must satisfy 0 < observe line <= cleanup line < summary line < 100%')
   }
   if (!(0 < compactionDriver.pressureRatio && compactionDriver.pressureRatio < 1)) {
-    throw new Error('旧驱动阈值必须大于 0% 且小于 100%')
+    throw new Error('the legacy driver threshold must be greater than 0% and less than 100%')
   }
   for (const [name, section, timeout, limit, window] of [
     ['compactionDriver', compactionDriver, 'timeoutMs', 'maxCompactionsPerSession', 'contextWindow'],
@@ -271,9 +271,9 @@ export function resolveCompressionConfig(config = {}) {
 
 export function resolveArchiveConfig(config = {}) {
   const value = resolveSection(unwrapConfig(config)?.archive, DEFAULT_CONFIG.archive)
-  if (value.enabled && (!value.directory.trim() || !isAbsolute(value.directory))) throw new Error('归档启用时必须指定绝对目录路径')
-  if (value.previousDirectories.some(dir => !isAbsolute(dir))) throw new Error('历史归档目录必须是绝对路径')
-  if (!Number.isSafeInteger(value.retryGeneration) || value.retryGeneration < 0) throw new Error('归档重试计数必须为非负整数')
+  if (value.enabled && (!value.directory.trim() || !isAbsolute(value.directory))) throw new Error('archiving requires an absolute directory path')
+  if (value.previousDirectories.some(dir => !isAbsolute(dir))) throw new Error('previous archive directories must be absolute paths')
+  if (!Number.isSafeInteger(value.retryGeneration) || value.retryGeneration < 0) throw new Error('the archive retry counter must be a non-negative integer')
   return Object.freeze({ ...value, previousDirectories: Object.freeze([...value.previousDirectories]) })
 }
 
@@ -285,7 +285,7 @@ export function resolveConfig(config = {}) {
   if (typeof config !== 'object' || config === null) config = {}
   for (const name of LEGACY_SECTIONS) {
     if (config[name] !== undefined) {
-      console.warn(`[dsh-token-optimizer] 配置节 "${name}" 已废弃(v2 合并进 outputLadder 或退役),已忽略。请从 cordis.patch.yml 移除该节。`)
+      console.warn(`[dsh-token-optimizer] config section "${name}" is deprecated (merged into outputLadder or retired in v2) and was ignored. Please remove it from cordis.patch.yml.`)
     }
   }
   return Object.freeze({
@@ -297,7 +297,7 @@ export function resolveConfig(config = {}) {
     toolTrim: resolveSection(config.toolTrim, DEFAULT_CONFIG.toolTrim),
     outputLadder: resolveSection(config.outputLadder, DEFAULT_CONFIG.outputLadder),
     ...resolveCompressionConfig(config),
-    // 占位节:enabled=false 时无模块消费,仅保证配置合法(阶段 3b 后开开关)
+    // placeholder section: with enabled:false no module consumes it; it only keeps the config valid (flip it on after stage 3b)
     memory_bridge: resolveSection(config.memory_bridge, DEFAULT_CONFIG.memory_bridge),
   })
 }

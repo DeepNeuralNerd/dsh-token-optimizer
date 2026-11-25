@@ -1,14 +1,14 @@
-// 轻量统计:记录各模块的节省/处理次数,会话结束时输出报告。
-// T2 新增:按会话分桶(bucket/snapshotSession)与 token/金额估算(estimateTokens/estimateCost)。
-// snapshot()/formatReport() 的返回形状是既有调用点契约(monitor 在用)→ 只加方法不改形状。
+// Lightweight stats: record each module's savings/processing counts and print a report at session end.
+// Added in T2: per-session bucketing (bucket/snapshotSession) and token/cost estimation (estimateTokens/estimateCost).
+// The return shapes of snapshot()/formatReport() are contracts with existing call sites (monitor uses them) -> only add methods; never change shapes.
 
-const CHARS_PER_TOKEN = 1.6 // 粗估:DeepSeek 中文约 1.6 字符/token(估算值,实际以 usage 为准)
+const CHARS_PER_TOKEN = 1.6 // rough estimate: DeepSeek Chinese is about 1.6 characters/token (estimate; real usage is authoritative)
 
 export function createStats() {
   const busyAgents = new Set()
   const counters = new Map()
   const samples = []
-  const buckets = new Map() // sessionId -> { counters: Map, samples: [] }(T2 按会话分桶)
+  const buckets = new Map() // sessionId -> { counters: Map, samples: [] } (T2 per-session bucketing)
 
   function bump(key, delta = 1) {
     counters.set(key, (counters.get(key) ?? 0) + delta)
@@ -26,8 +26,8 @@ export function createStats() {
     }
   }
 
-  // 会话分桶:返回与本对象同形状的 bump/addSample 门面,写入该会话的桶;
-  // 全局计数(bump)不受影响——分层模块两边都记(全局供 monitor 报告,分桶供 /token-status)
+  // Session bucketing: returns a bump/addSample facade with the same shape as this object, writing into that session's bucket;
+  // global counters (bump) are unaffected -- layered modules record to both (global for monitor reports, buckets for /token-status)
   function bucket(sessionId) {
     const key = String(sessionId ?? 'default')
     let b = buckets.get(key)
@@ -46,7 +46,7 @@ export function createStats() {
     }
   }
 
-  // 与 snapshot() 同构:{ counters, samples }(只含该会话桶,与全局计数互不干扰)
+  // Same shape as snapshot(): { counters, samples } (only this session's bucket; independent of global counters)
   function snapshotSession(sessionId) {
     const b = buckets.get(String(sessionId ?? 'default'))
     return {
@@ -55,14 +55,14 @@ export function createStats() {
     }
   }
 
-  // 字符节省 → token 粗估(保守口径:按 CHARS_PER_TOKEN 换算)
+  // Character savings -> rough token estimate (conservative: converted via CHARS_PER_TOKEN)
   function estimateTokens(savedChars) {
     const n = Number(savedChars)
     if (!Number.isFinite(n) || n <= 0) return 0
     return Math.round(n / CHARS_PER_TOKEN)
   }
 
-  // 人民币估算:各 token 量按"元/百万"计价求和
+  // Cost estimate (CNY): each token quantity priced in yuan per million and summed
   function estimateCost({ inputTokens = 0, cacheReadTokens = 0, outputTokens = 0 } = {}, pricing) {
     const p = pricing ?? { inputPerMillion: 0.8, cacheHitPerMillion: 0.23, outputPerMillion: 2.8 }
     const cost = (Number(inputTokens) || 0) * (p.inputPerMillion ?? 0)
@@ -74,12 +74,12 @@ export function createStats() {
   function formatReport() {
     const c = Object.fromEntries(counters)
     const lines = []
-    lines.push('── dsh-token-optimizer 会话统计 ──')
+    lines.push('\u2500\u2500 dsh-token-optimizer session statistics \u2500\u2500')
     for (const [key, value] of Object.entries(c)) {
       lines.push(`  ${key}: ${value}`)
     }
     const totalChars = samples.reduce((sum, s) => sum + (s.savedChars ?? 0), 0)
-    if (totalChars > 0) lines.push(`  共节省约 ${totalChars.toLocaleString()} 字符(压缩/去重)`)
+    if (totalChars > 0) lines.push(`  saved about ${totalChars.toLocaleString()} characters in total (compression/dedup)`)
     return lines.join('\n')
   }
 

@@ -1,9 +1,9 @@
-// 宿主 React + 通用设置 slot；无需构建或新增前端依赖。
+// Host React + general-settings slot; no build step or new frontend dependencies.
 window.__ModuleLoader__.load({
   id: '@zoria-lind/dsh-token-optimizer',
   factory: (require) => {
     let React
-    try { React = require('react') } catch { /* 仍可使用 /token-status */ }
+    try { React = require('react') } catch { /* /token-status still works */ }
     const defaults = { mode: 'legacy', low: '40', mid: '50', high: '65', legacy: '45' }
     const style = {
       wrap: { padding: '12px 0', lineHeight: 1.65 },
@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       if (!React || !ctx?.slots?.register) return
       let form
-      try { form = ctx.configForms?.get?.('token-optimizer') } catch { /* 显示不可编辑提示 */ }
+      try { form = ctx.configForms?.get?.('token-optimizer') } catch { /* show the non-editable notice */ }
       const el = React.createElement
       function Settings() {
         const snapshot = React.useSyncExternalStore(
@@ -55,7 +55,7 @@ window.__ModuleLoader__.load({
           if (raw.some((v) => v === '') || ![low, mid, high, legacy].every(Number.isFinite)
             || !(0 < low && low <= mid && mid < high && high < 100)
             || !(0 < legacy && legacy < 100)) {
-            setMessage('未保存：须满足 0 < 观测线 ≤ 清理线 < 摘要线 < 100%；旧驱动阈值也须在 0% 与 100% 之间。')
+            setMessage('Not saved: 0 < observe line <= cleanup line < summary line < 100% is required; the legacy threshold must also be between 0% and 100%.')
             return
           }
           setSaving(true)
@@ -68,16 +68,16 @@ window.__ModuleLoader__.load({
               { op: 'set', path: ['layeredCompact', 'highRatio'], value: high / 100 },
               { op: 'set', path: ['compactionDriver', 'pressureRatio'], value: legacy / 100 },
             ])
-            setMessage(result === true ? '已保存；下一次压缩检查采用新配置，正在执行的操作沿用原配置。'
-              : result === false ? '保存失败：宿主拒绝或未完成写入。' : '保存结果未确认，请核对生效值后重试。')
-          } catch (err) { setMessage('保存失败：' + (err?.message ?? err)) }
+            setMessage(result === true ? 'Saved; the next compaction check uses the new config, while operations already running keep the previous one.'
+              : result === false ? 'Save failed: the host rejected it or the write did not finish.' : 'Save result unconfirmed; check the effective values and retry.')
+          } catch (err) { setMessage('Save failed: ' + (err?.message ?? err)) }
           finally { setSaving(false) }
         }
         const saveArchive = async (retry = false) => {
           if (!writable || !form?.mutate) return
           const directory = archiveDraft.directory.trim()
           if (!retry && archiveDraft.enabled && !(/^[A-Za-z]:[\\/]/.test(directory) || directory.startsWith('\\\\') || directory.startsWith('/'))) {
-            setArchiveMessage('未保存：启用归档必须填写绝对目录路径。'); return
+            setArchiveMessage('Not saved: enabling archiving requires an absolute directory path.'); return
           }
           setSaving(true)
           try {
@@ -93,59 +93,59 @@ window.__ModuleLoader__.load({
               ]
             const result = await form.mutate(ops)
             setArchiveMessage(result === true
-              ? retry ? '已提交重试；写盘是否成功请查看 /token-status。' : '已保存归档设置；后续输入按此配置检查，写盘状态请查看 /token-status。'
-              : result === false ? '保存失败：宿主拒绝或未完成写入。' : '保存结果未确认，请核对后重试。')
-          } catch (err) { setArchiveMessage('保存失败：' + (err?.message ?? err)) }
+              ? retry ? 'Retry submitted; check /token-status for the write result.' : 'Archive settings saved; later input is checked against this config; check /token-status for write status.'
+              : result === false ? 'Save failed: the host rejected it or the write did not finish.' : 'Save result unconfirmed; check the values and retry.')
+          } catch (err) { setArchiveMessage('Save failed: ' + (err?.message ?? err)) }
           finally { setSaving(false) }
         }
         function threshold(field, label) {
           return el('label', { style: style.row },
             el('span', null, label),
-            el('input', { type: 'range', min: 0.1, max: 99.9, step: 0.1, value: draft[field], disabled: !writable, 'aria-label': label + '滑块', onChange: (e) => change(field, e.target.value) }),
+            el('input', { type: 'range', min: 0.1, max: 99.9, step: 0.1, value: draft[field], disabled: !writable, 'aria-label': label + ' slider', onChange: (e) => change(field, e.target.value) }),
             el('input', { type: 'number', min: 0.1, max: 99.9, step: 0.1, value: draft[field], disabled: !writable, style: style.input, 'aria-label': label, onChange: (e) => change(field, e.target.value) }),
             el('span', null, '%'))
         }
         return el('section', { style: style.wrap },
-          el('div', { style: { fontWeight: 600 } }, 'Token 优化与压缩'),
+          el('div', { style: { fontWeight: 600 } }, 'Token Optimization & Compaction'),
           el('div', { style: style.hint }, ready
-            ? '当前控制器：' + ({ legacy: '旧驱动', layered: '分层', off: '插件自动压缩关闭' }[live.mode])
-            : '尚未取得当前配置；以下为默认参考值，不可编辑。'),
-          el('label', { style: style.row }, '自动压缩策略',
-            el('select', { value: draft.mode, disabled: !writable, 'aria-label': '自动压缩策略', onChange: (e) => change('mode', e.target.value) },
-              el('option', { value: 'legacy' }, '旧驱动（保留现有策略）'),
-              el('option', { value: 'layered' }, '分层（先清理工具历史，再尝试摘要）'),
-              el('option', { value: 'off' }, '关闭插件自动压缩'))),
-          threshold('mid', '工具历史清理阈值'),
-          threshold('high', '模型摘要阈值'),
-          el('details', null, el('summary', null, '高级阈值'),
-            threshold('low', '观测线（仅观测，不压缩）'),
-            threshold('legacy', '旧驱动阈值')),
-          el('div', { style: style.hint }, '分层阈值仅在分层策略下生效；旧驱动还受最少轮数与 token 量限制。'),
-          el('div', { style: style.hint }, '保留当前默认值，不自动启用分层。关闭此处的自动压缩后，宿主仍保留自身的安全压缩。'),
-          el('div', { style: style.hint }, '工具历史清理会遮蔽部分历史结果；模型摘要可能丢失细节，能够回查原文也不等于无损。'),
-          el('div', { style: style.hint }, '当前会话的触发原因、尝试/成功、前后估算量与异常原因：使用 /token-status。'),
-          el('button', { disabled: !writable, onClick: save }, saving ? '保存中…' : '保存压缩设置'),
-          el('div', { role: 'status', style: style.hint }, message || (ready ? snapshot.writable ? '修改后整组保存；下一次检查生效。' : '当前配置只读，无法保存。' : '设置服务未就绪；可用 /token-status 查看运行状态。')),
-          el('div', { style: { fontWeight: 600, marginTop: '18px' } }, 'runtime 原文归档'),
+            ? 'Current controller: ' + ({ legacy: 'Legacy driver', layered: 'Layered', off: 'Plugin auto-compaction off' }[live.mode])
+            : 'Current config not yet available; the values below are non-editable defaults for reference.'),
+          el('label', { style: style.row }, 'Auto-compaction strategy',
+            el('select', { value: draft.mode, disabled: !writable, 'aria-label': 'Auto-compaction strategy', onChange: (e) => change('mode', e.target.value) },
+              el('option', { value: 'legacy' }, 'Legacy driver (keep the existing strategy)'),
+              el('option', { value: 'layered' }, 'Layered (clear tool history first, then try summarization)'),
+              el('option', { value: 'off' }, 'Turn off plugin auto-compaction'))),
+          threshold('mid', 'Tool-history cleanup threshold'),
+          threshold('high', 'Model summarization threshold'),
+          el('details', null, el('summary', null, 'Advanced thresholds'),
+            threshold('low', 'Observe line (observation only, no compaction)'),
+            threshold('legacy', 'Legacy driver threshold')),
+          el('div', { style: style.hint }, 'Layered thresholds take effect only under the layered strategy; the legacy driver is also limited by minimum turns and token counts.'),
+          el('div', { style: style.hint }, 'Current defaults are kept; layered mode is not enabled automatically. Turning auto-compaction off here still leaves the host\u2019s own safety compaction in place.'),
+          el('div', { style: style.hint }, 'Tool-history cleanup shadows some past results; model summarization may lose detail. Being able to retrieve originals does not mean the summary is lossless.'),
+          el('div', { style: style.hint }, 'For this session\u2019s trigger reasons, attempts/successes, before/after estimates and failure causes: use /token-status.'),
+          el('button', { disabled: !writable, onClick: save }, saving ? 'Saving\u2026' : 'Save compaction settings'),
+          el('div', { role: 'status', style: style.hint }, message || (ready ? snapshot.writable ? 'Edits save as one group; the next check picks them up.' : 'The current config is read-only; saving is unavailable.' : 'Settings service not ready; you can view runtime state with /token-status.')),
+          el('div', { style: { fontWeight: 600, marginTop: '18px' } }, 'Runtime Original-Text Archiving'),
           el('label', { style: style.row },
-            el('input', { type: 'checkbox', checked: !!archiveDraft.enabled, disabled: !writable, 'aria-label': '启用原文归档', onChange: e => setArchiveDraft(d => ({ ...d, enabled: e.target.checked })) }), '保存用户原文与模型输出（默认关闭）'),
-          el('label', { style: style.row }, '保存目录',
-            el('input', { type: 'text', value: archiveDraft.directory, disabled: !writable, style: { ...style.input, width: 'min(100%, 460px)' }, 'aria-label': '原文归档目录', placeholder: '填写绝对目录路径', onChange: e => setArchiveDraft(d => ({ ...d, directory: e.target.value })) })),
-          el('div', { style: style.hint }, '用户原文先写盘成功再放行；模型输出生成后保存，后续送模和摘要前确认。写盘失败会阻止相关请求，可重试、改目录，或明确关闭归档后继续。'),
-          el('div', { style: style.hint }, '切换目录不搬迁旧文件；旧目录保留为回查来源。会话内使用 conversation_archive 按需搜索和分页读取；开启前丢失的流片段无法补录。'),
-          el('div', { style: style.hint }, '历史归档目录：' + ((archiveLive.previousDirectories ?? []).join('；') || '无')),
-          el('button', { disabled: !writable, onClick: () => saveArchive(false) }, '保存归档设置'),
-          el('button', { disabled: !writable || !archiveLive.enabled, onClick: () => saveArchive(true) }, '重试归档'),
+            el('input', { type: 'checkbox', checked: !!archiveDraft.enabled, disabled: !writable, 'aria-label': 'Enable original-text archiving', onChange: e => setArchiveDraft(d => ({ ...d, enabled: e.target.checked })) }), 'Save user originals and model outputs (off by default)'),
+          el('label', { style: style.row }, 'Archive directory',
+            el('input', { type: 'text', value: archiveDraft.directory, disabled: !writable, style: { ...style.input, width: 'min(100%, 460px)' }, 'aria-label': 'Original-text archive directory', placeholder: 'Enter an absolute directory path', onChange: e => setArchiveDraft(d => ({ ...d, directory: e.target.value })) })),
+          el('div', { style: style.hint }, 'User originals are released only after a successful disk write; model outputs are saved after generation and confirmed before later model calls and summarization. A failed write blocks the related request; retry, change the directory, or explicitly turn archiving off to continue.'),
+          el('div', { style: style.hint }, 'Switching directories does not move old files; the old directory stays as a retrieval source. Within a session, use conversation_archive to search and read pages on demand; stream fragments lost before enabling cannot be backfilled.'),
+          el('div', { style: style.hint }, 'Previous archive directories: ' + ((archiveLive.previousDirectories ?? []).join('; ') || 'none')),
+          el('button', { disabled: !writable, onClick: () => saveArchive(false) }, 'Save archive settings'),
+          el('button', { disabled: !writable || !archiveLive.enabled, onClick: () => saveArchive(true) }, 'Retry archiving'),
           el('div', { role: 'status', style: style.hint }, archiveMessage))
       }
       const disposers = []
-      // 先挂载可读行，再订阅命名空间；未 served 时也能显示明确的不可编辑状态。
+      // Mount the readable row first, then subscribe to the namespace; a clear non-editable state shows even before it is served.
       const register = () => ctx.slots.register({ name: 'settings.general.item', id: 'token-optimizer.compression', order: 710 }, Settings)
       if (typeof ctx.slots.inject === 'function') disposers.push(ctx.slots.inject('settings.general.item', register))
       else disposers.push(register())
       try {
         if (ctx.configForms?.whileServed) disposers.push(ctx.configForms.whileServed(['token-optimizer'], () => () => {}))
-      } catch { /* 行仍可读，保存按钮保持禁用 */ }
+      } catch { /* the row is still readable; the save button stays disabled */ }
       let disposed = false
       const cleanup = () => {
         if (disposed) return

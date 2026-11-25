@@ -1,4 +1,4 @@
-// 原文归档只使用公开 runtime 接口；不替换 Session.append 或宿主持久化。
+// Original-text archiving uses only public runtime APIs; it does not replace Session.append or host persistence.
 import * as fs from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { createInterface } from 'node:readline'
@@ -16,10 +16,10 @@ const textOf = record => {
   return JSON.stringify(record.frame ?? record.data ?? message ?? '')
 }
 const roleOf = r => r.kind === 'input' ? 'user-original' : r.eventType ?? r.kind
-const abort = signal => { if (signal?.aborted) throw signal.reason ?? new Error('归档等待已取消') }
+const abort = signal => { if (signal?.aborted) throw signal.reason ?? new Error('archive wait was cancelled') }
 const waitTick = signal => new Promise((done, reject) => {
   const finish = () => { clearTimeout(timer); signal?.removeEventListener('abort', stop); done() }
-  const stop = () => { clearTimeout(timer); signal?.removeEventListener('abort', stop); reject(signal.reason ?? new Error('归档等待已取消')) }
+  const stop = () => { clearTimeout(timer); signal?.removeEventListener('abort', stop); reject(signal.reason ?? new Error('archive wait was cancelled')) }
   const timer = setTimeout(finish, 100)
   signal?.addEventListener('abort', stop, { once: true })
   if (signal?.aborted) stop()
@@ -38,7 +38,7 @@ export function createArchiveModule(ctx, config, deps = {}) {
     if (!s) {
       s = { session, scan: 0, pending: new Map(), seen: new Set(), index: [], roots: new Set(),
         initialized: new Set(), serial: Promise.resolve(), error: null, failedKey: null, retry: 0,
-        durable: -1, file: null, bytes: 0, tools: new Set(), coverage: '启用前的流片段无法补录；历史消息仅按宿主仍保存的事件回填。' }
+        durable: -1, file: null, bytes: 0, tools: new Set(), coverage: 'Stream fragments from before enabling cannot be backfilled; history is backfilled only from events the host still retains.' }
       states.set(session.id, s)
     }
     s.session = session
@@ -55,7 +55,7 @@ export function createArchiveModule(ctx, config, deps = {}) {
     add(s, { kind: 'input', key: 'input:' + hash(JSON.stringify(message)), message, origin, ...(seq === undefined ? {} : { seq }) })
   }
   function collect(s) {
-    if (typeof s.session.snapshotEvents !== 'function') throw new Error('宿主缺少 snapshotEvents；归档不能放行')
+    if (typeof s.session.snapshotEvents !== 'function') throw new Error('the host lacks snapshotEvents; archiving cannot proceed')
     for (const e of s.session.snapshotEvents(s.scan)) {
       if (e.type === 'agent/inbox/spliced') for (const m of e.data.inserted ?? []) input(s, m, 'inbox', e.seq)
       if (e.type === 'user/message' || e.type === 'assistant/message' || e.type === 'assistant/attempt') {
@@ -76,7 +76,7 @@ export function createArchiveModule(ctx, config, deps = {}) {
     const loaded = []
     for (const name of names.filter(n => n.startsWith(prefix(s)) && n.endsWith('.jsonl')).sort()) {
       const file = join(root, name)
-      // 仅修复崩溃留下的未结束尾行；完整但损坏的 JSON 报错，不覆盖历史。
+      // Repair only the unfinished trailing line a crash left behind; a complete but corrupt JSON record raises an error instead of overwriting history.
       const handle = await io.open(file, 'r+')
       try {
         const size = (await handle.stat()).size
@@ -88,7 +88,7 @@ export function createArchiveModule(ctx, config, deps = {}) {
             if (Number.isSafeInteger(owner) && owner > 0 && owner !== process.pid) {
               try { process.kill(owner, 0) } catch (e) { if (e.code === 'ESRCH') active = false }
             } else if (file === s.file) active = false
-            if (active) throw Object.assign(new Error('归档尾行未完成，不能改写可能仍在使用的段'), { code: 'EBUSY' })
+            if (active) throw Object.assign(new Error('archive tail is incomplete; cannot rewrite a segment that may still be in use'), { code: 'EBUSY' })
             let position = size, end = 0
             while (position > 0) {
               const count = Math.min(65536, position); position -= count
@@ -106,7 +106,7 @@ export function createArchiveModule(ctx, config, deps = {}) {
       try {
         for await (const line of lines) {
           const bytes = Buffer.byteLength(line) + 1, record = JSON.parse(line)
-          if (record.v !== 1 || record.sessionId !== s.session.id || typeof record.key !== 'string') throw new Error('归档记录格式或会话不匹配')
+          if (record.v !== 1 || record.sessionId !== s.session.id || typeof record.key !== 'string') throw new Error('archive record format or session mismatch')
           loaded.push(metadata(record, file, offset, bytes)); offset += bytes
         }
       } finally { lines.close() }
@@ -126,7 +126,7 @@ export function createArchiveModule(ctx, config, deps = {}) {
     const batch = [...s.pending.values()]
     if (!batch.length) { s.error = null; s.failedKey = null; s.durable = s.scan - 1; return }
     const lines = batch.map(r => JSON.stringify(r) + '\n')
-    // 每个进程/插件生命周期独占自己的段；不与另一桌面进程争写同一个文件。
+    // Each process/plugin lifecycle owns its own segment; it never contends with another desktop process writing the same file.
     let handle
     try { handle = await io.open(file, 'r+') }
     catch (error) { if (error.code !== 'ENOENT') throw error; handle = await io.open(file, 'wx+') }
@@ -139,7 +139,7 @@ export function createArchiveModule(ctx, config, deps = {}) {
         let written = 0
         while (written < buffer.length) {
           const result = await handle.write(buffer, written, buffer.length - written, position + written)
-          if (result.bytesWritten <= 0) throw new Error('归档写入未前进')
+          if (result.bytesWritten <= 0) throw new Error('archive write made no progress')
           written += result.bytesWritten
         }
         position += buffer.length
@@ -147,7 +147,7 @@ export function createArchiveModule(ctx, config, deps = {}) {
       await handle.sync()
     } catch (error) {
       try { if (start !== undefined) { await handle.truncate(start); await handle.sync() } }
-      catch (rollbackError) { s.initialized.delete(root); throw new AggregateError([error, rollbackError], '归档写盘与回滚均失败；保持暂停') }
+      catch (rollbackError) { s.initialized.delete(root); throw new AggregateError([error, rollbackError], 'archive write and rollback both failed; staying paused') }
       throw error
     } finally {
       try { await handle.close() } catch (error) { s.initialized.delete(root); throw error }
@@ -168,7 +168,7 @@ export function createArchiveModule(ctx, config, deps = {}) {
       try { collect(s); await commit(s, cfg) }
       catch (err) {
         s.error = err; s.failedKey = key
-        console.warn('[dsh-token-optimizer] 原文归档失败，请查看 /token-status，重试、修改目录或明确关闭归档。错误代码：' + (err.code ?? err.name))
+        console.warn('[dsh-token-optimizer] original-text archive failed; check /token-status, then retry, change the directory, or explicitly turn archiving off. Error code: ' + (err.code ?? err.name))
         throw err
       }
     })
@@ -179,17 +179,17 @@ export function createArchiveModule(ctx, config, deps = {}) {
     const s = state(session)
     while (true) {
       abort(signal)
-      if (closed) throw new Error('归档插件已卸载，请重新提交待处理请求')
+      if (closed) throw new Error('the archive plugin was unloaded; resubmit the pending request')
       const cfg = read()
       if (!cfg.enabled) return
       try {
         await once(s, cfg)
         abort(signal)
-        // 路径或开关在等待期间改变时，按新设置再确认一次。
+        // If the path or switch changed while waiting, confirm once more against the new settings.
         if (!read().enabled || (!s.pending.size && keyOf(s, cfg) === keyOf(s, read()))) return
       } catch (err) {
         if (!wait || signal?.aborted || closed) throw err
-        // 不连续重试写坏目录；只有重试计数、路径或开关变化才再写。
+        // Do not retry a broken directory back-to-back; write again only when the retry count, path, or switch changes.
         await waitTick(signal)
       }
     }
@@ -197,7 +197,7 @@ export function createArchiveModule(ctx, config, deps = {}) {
   function background(session) {
     if (closed || !read().enabled) return
     const s = state(session)
-    // 每轮只安排一个后台任务；后续请求仍必须显式等待。
+    // Schedule at most one background task per round; later requests must still wait explicitly.
     if (s.scheduled) return
     s.scheduled = true
     queueMicrotask(() => {
@@ -245,9 +245,9 @@ export function createArchiveModule(ctx, config, deps = {}) {
     background(payload.agent.session)
   }
   function request(options, next) {
-    // 关闭归档时不访问宿主会话服务，也不干扰正常请求。
+    // With archiving off, do not touch host session services and do not interfere with normal requests.
     if (!read().enabled || options.sessionId === undefined) return next()
-    if (!sessionStore?.get) throw new Error('归档会话服务尚未就绪，未放行模型请求')
+    if (!sessionStore?.get) throw new Error('the archive session service is not ready; the model request was not released')
     const session = sessionStore.get(options.sessionId)
     if (!session) return next()
     return (async function* () {
@@ -266,7 +266,7 @@ export function createArchiveModule(ctx, config, deps = {}) {
       let offset = 0
       while (offset < buffer.length) {
         const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, meta.offset + offset)
-        if (!bytesRead) throw new Error('归档记录不完整；未返回截断原文')
+        if (!bytesRead) throw new Error('archive record is incomplete; truncated originals are not returned')
         offset += bytesRead
       }
       return JSON.parse(buffer.toString('utf8'))
@@ -281,8 +281,8 @@ export function createArchiveModule(ctx, config, deps = {}) {
     if (args.action === 'status') return status(session)
     if (args.action === 'read') {
       const meta = s.index.find(m => m.key === args.key)
-      if (!meta) throw new Error('当前会话未找到此 key；先搜索获取 key')
-      if (meta.bytes > 16 * 1024 * 1024) throw new Error('单条记录超过16MiB，请在本地归档 JSONL 中读取：' + meta.file)
+      if (!meta) throw new Error('this key was not found in the current session; search first to obtain a key')
+      if (meta.bytes > 16 * 1024 * 1024) throw new Error('a single record exceeds 16MiB; read it from the local archive JSONL: ' + meta.file)
       const record = await readRecord(meta)
       const value = textOf(record), chars = Array.from(value)
       const offset = Math.max(0, Math.floor(Number(args.offset) || 0)), limit = Math.min(4000, Math.max(1, Math.floor(Number(args.limit) || 2000)))
@@ -293,7 +293,7 @@ export function createArchiveModule(ctx, config, deps = {}) {
     const offset = Math.max(0, Math.floor(Number(args.offset) || 0)), limit = Math.min(20, Math.max(1, Math.floor(Number(args.limit) || 10)))
     const records = [], omitted = []
     let cursor = offset, scanned = 0
-    // 有界全文扫描：每页最多读2MiB（单条最大16MiB），可用 nextOffset 继续；不把原文整池送模。
+    // Bounded full-text scan: each page reads at most 2MiB (records up to 16MiB); continue with nextOffset; never inject the whole pool into the model.
     for (; cursor < s.index.length && cursor - offset < 2000 && records.length < limit && scanned < 2 * 1024 * 1024; cursor++) {
       const meta = s.index[cursor]
       if (args.role ? meta.role !== args.role : ['assistant-stream', 'checkpoint'].includes(meta.role)) continue
@@ -305,17 +305,17 @@ export function createArchiveModule(ctx, config, deps = {}) {
       if (found >= 0) records.push({ key: meta.key, seq: meta.seq, role: meta.role, time: meta.time,
         excerpt: text.slice(Math.max(0, found - 40), Math.max(0, found - 40) + 180) })
     }
-    return { scope: '当前会话；默认搜索原始输入/接纳输入/最终模型输出，role可选 assistant-stream 查流片段', records,
+    return { scope: 'current session; by default searches raw inputs/accepted inputs/final model outputs; role can be set to assistant-stream to search stream fragments', records,
       nextOffset: cursor < s.index.length ? cursor : null, oversizedRecordsNotSearched: omitted, coverage: s.coverage }
 
   }
   function status(session) {
     const cfg = read(), s = session ? states.get(session.id) : null
     return { enabled: cfg.enabled, directory: cfg.directory, previousDirectories: cfg.previousDirectories,
-      state: !cfg.enabled ? '关闭（此前未写成功的内容仍保留在本进程内存）' : s?.error ? '写盘失败，相关请求暂停；重试/改路径/关闭后恢复' : s?.pending.size ? '等待落盘确认' : s?.durable >= 0 ? '已确认写盘' : '等待会话检查',
+      state: !cfg.enabled ? 'off (content not yet written successfully stays in this process\u2019s memory)' : s?.error ? 'disk write failed; related requests are paused; recovers after retry/path change/turning it off' : s?.pending.size ? 'awaiting durable confirmation' : s?.durable >= 0 ? 'disk write confirmed' : 'awaiting session check',
       durableEventSeq: s?.durable ?? -1, pending: s?.pending.size ?? 0, records: s?.index.length ?? 0,
-      error: s?.error ? { code: s.error.code ?? s.error.name, message: '归档未完成；不会作为已保存放行' } : null,
-      lookupAvailable: !!s?.tools.size, coverage: s?.coverage ?? '开启时回填宿主仍保存的事件；关闭期间流片段不可补录。' }
+      error: s?.error ? { code: s.error.code ?? s.error.name, message: 'archive incomplete; not released as saved' } : null,
+      lookupAvailable: !!s?.tools.size, coverage: s?.coverage ?? 'On enable, backfills events the host still retains; stream fragments lost while off cannot be backfilled.' }
   }
   function mount(agent) {
     if (!agent?.session || closed) return
@@ -325,7 +325,7 @@ export function createArchiveModule(ctx, config, deps = {}) {
     try {
       const tool = defineTool({
         name: 'conversation_archive',
-        description: '查找当前对话压缩前的用户原文与模型输出。search 有界全文搜索（query省略时列出），有nextOffset须继续下一页；read 按 key 分页读取，offset/limit 按 Unicode 字符；status 查看归档。先查找再按需读，勿整池注入。',
+        description: 'Find the user originals and model outputs of this conversation before compaction. search: bounded full-text search (lists when query is omitted); if nextOffset is present, continue with the next page; read: read a record by key with paging, offset/limit count Unicode characters; status: inspect the archive. Search first, then read on demand; never inject the whole pool.',
         parameters: { action: { type: 'string', enum: ['search', 'read', 'status'] }, query: { type: 'string' },
           key: { type: 'string' }, role: { type: 'string' }, offset: { type: 'integer' }, limit: { type: 'integer' } },
         output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
@@ -334,7 +334,7 @@ export function createArchiveModule(ctx, config, deps = {}) {
       })
       entry.dispose = agent.ctx.tools.register(tool)
       state(agent.session).tools.add(agent.id)
-    } catch (err) { console.warn('[dsh-token-optimizer] 归档回查工具注册失败：' + (err.code ?? err.name)) }
+    } catch (err) { console.warn('[dsh-token-optimizer] archive lookup tool registration failed: ' + (err.code ?? err.name)) }
   }
   function on(name, fn, options) { ctx.on(name, fn, options); listeners.push([name, fn]) }
   on('agent/pre-step', preStep, { prepend: true })
@@ -356,13 +356,13 @@ export function createArchiveModule(ctx, config, deps = {}) {
   if (typeof sessionRegistration === 'function') disposers.push(sessionRegistration)
   else if (sessionRegistration?.dispose) disposers.push(() => sessionRegistration.dispose())
   const registration = ctx.inject?.(['commands'], svc => {
-    disposers.push(svc.commands.register({ name: 'token-archive-retry', description: '重试当前会话的原文归档（不重复发送输入）',
+    disposers.push(svc.commands.register({ name: 'token-archive-retry', description: 'Retry the original-text archive for the current session (without resending input)',
       async handler(invocation) {
         const session = invocation?.agent?.session
-        if (!session) return { kind: 'error', text: '请在会话内执行' }
+        if (!session) return { kind: 'error', text: 'run this inside a session' }
         state(session).retry++
-        try { await ensure(session); return { kind: 'success', text: read().enabled ? '归档检查通过；等待中的输入可继续。' : '归档已关闭。' } }
-        catch (e) { return { kind: 'error', text: '归档仍失败：' + (e.code ?? e.name) + '；请修改目录或明确关闭。' } }
+        try { await ensure(session); return { kind: 'success', text: read().enabled ? 'Archive check passed; waiting inputs can continue.' : 'Archiving is off.' } }
+        catch (e) { return { kind: 'error', text: 'Archive still failing: ' + (e.code ?? e.name) + '; change the directory or turn it off explicitly.' } }
       },
     }))
   })

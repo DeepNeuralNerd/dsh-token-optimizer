@@ -1,10 +1,10 @@
-// 使用宿主提供的 schema；缺失时不阻断插件，只关闭设置表单。
-// 整节 volatile 保证一次保存的阈值在运行端作为一组读取；其它模块保持普通配置。
+// Use the schema provided by the host; when missing, do not block the plugin -- only the settings form is disabled.
+// The volatile section guarantees that thresholds saved at once are read as a group at runtime; other modules keep plain config.
 let Schema
 try {
   const mod = await import('@deepseek-ai/schemastery')
   Schema = mod.default ?? mod
-} catch { /* 不安装新的依赖 */ }
+} catch { /* do not install new dependencies */ }
 
 export function buildConfigSchema(S) {
   return S.object({
@@ -40,5 +40,5 @@ export function buildConfigSchema(S) {
   })
 }
 let built
-try { built = Schema ? buildConfigSchema(Schema) : undefined } catch { /* 服务不兼容时降级 */ }
+try { built = Schema ? buildConfigSchema(Schema) : undefined } catch { /* degrade when the service is incompatible */ }
 export const Config = built

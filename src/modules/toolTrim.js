@@ -8,14 +8,14 @@ const TEXT_OUTPUT = {
   render: (_args, value) => [{ type: 'text', text: typeof value === 'string' ? value : String(value) }],
 }
 
-// 解析核心的 defineTool(不声明为依赖,运行时经 createRequire 借道)。
-// 多锚点:插件自身位置(link 挂载时走不到 profile 依赖桥)→ DSH_ROOT →
-// DSH_HOME/.dsh 的 profiles/node_modules(CLI 安装器生成的符号链接桥,
-// 指回全局 CLI 树,dsh-undo-savepoint 同款依赖)→ 全局 npm 目录。
-// 全部失败返回 undefined,mcpLazy 降级禁用,静态裁剪不受影响。
+// Resolve the core defineTool (not declared as a dependency; borrowed at runtime via createRequire).
+// Multiple anchors: the plugin's own location (a link install cannot reach the profile dependency bridge) -> DSH_ROOT ->
+// DSH_HOME/.dsh profiles/node_modules (the symlink bridge the CLI installer generates,
+// pointing back to the global CLI tree, the same dependency as dsh-undo-savepoint) -> the global npm directory.
+// If every anchor fails, returns undefined; mcpLazy degrades to disabled, and static trimming is unaffected.
 export function resolveDefineTool() {
   const anchors = []
-  anchors.push(import.meta.url) // 插件自身位置
+  anchors.push(import.meta.url) // the plugin's own location
   if (process.env.DSH_ROOT) anchors.push(join(process.env.DSH_ROOT, 'package.json'))
   const dshHome = process.env.DSH_HOME ?? join(homedir(), '.dsh')
   anchors.push(join(dshHome, 'profiles', 'node_modules', 'noop.js'))
@@ -26,7 +26,7 @@ export function resolveDefineTool() {
       req.resolve('@deepseek-ai/dsh-tools')
       const mod = req('@deepseek-ai/dsh-tools')
       if (mod && typeof mod.defineTool === 'function') return mod.defineTool
-    } catch { /* 下一锚点 */ }
+    } catch { /* next anchor */ }
   }
   return undefined
 }
@@ -57,7 +57,7 @@ export function createToolTrimModule(ctx, config, stats, deps = {}) {
   const allowed = name => (allow === null || allow.has(name)) && !deny.has(name)
   const live = gate => !closed && !gate.dead && gates.get(gate.agent.id) === gate
   function dispose(effect) {
-    try { effect?.(); return true } catch (err) { warn('撤销失败: ' + (err?.message ?? err)); return false }
+    try { effect?.(); return true } catch (err) { warn('undo failed: ' + (err?.message ?? err)); return false }
   }
   function dropMeta(gate) {
     const effect = gate.metaDisposer
@@ -88,9 +88,9 @@ export function createToolTrimModule(ctx, config, stats, deps = {}) {
     try {
       if (filter.allow !== undefined || filter.deny !== undefined) {
         effect = gate.tools.restrict(filter)
-        if (typeof effect !== 'function') throw Error('restrict 未返回可撤销句柄，无法保证过滤替换')
+        if (typeof effect !== 'function') throw Error('restrict returned no undoable handle; filter replacement cannot be guaranteed')
       }
-    } catch (err) { warn('过滤未生效: ' + (err?.message ?? err)); return false }
+    } catch (err) { warn('filter not applied: ' + (err?.message ?? err)); return false }
     if (!live(gate)) { dispose(effect); return false }
     const old = gate.disposer
     gate.disposer = effect
@@ -113,19 +113,19 @@ export function createToolTrimModule(ctx, config, stats, deps = {}) {
     dropMeta(gate)
     const existing = view.visible.get(config.mcpLoadToolName)
     if (view.knownNames?.has(config.mcpLoadToolName) && !ownedDefinitions.has(existing)) {
-      warn('发现同名 ' + config.mcpLoadToolName + '，保留原工具并停用该作用域的懒加载')
+      warn('found a same-named ' + config.mcpLoadToolName + '; keeping the original tool and disabling lazy loading for this scope')
       return false
     }
     if (typeof gate.tools.register !== 'function') return false
     try {
       const definition = defineTool({
         name: config.mcpLoadToolName,
-        description: '搜索和按需加载 MCP 工具。先用 query 搜索名称或描述（空查询浏览目录），用 offset/limit 分页，再用 names 加载精确工具名。只返回有界目录；成功加载的工具出现在后续请求中。遵守用户及父作用域限制；加载失败会说明原因。',
+        description: 'Search and load MCP tools on demand. Use query to search names or descriptions (an empty query browses the catalog), offset/limit to page, then names to load exact tool names. Returns only a bounded catalog; tools that load successfully appear in later requests. Respects user and parent-scope restrictions; load failures report their reason.',
         parameters: {
-          query: { type: 'string', description: '可选：工具名、服务器名或描述的关键词；最长 200 字符' },
-          offset: { type: 'integer', description: '可选：从第几个匹配结果开始，默认 0' },
-          limit: { type: 'integer', description: '可选：每页 1–20 条，默认 10' },
-          names: { type: 'array', items: { type: 'string' }, description: '可选：要加载的精确工具名，每次最多 20 个；省略则只搜索' },
+          query: { type: 'string', description: 'Optional: keywords matching tool name, server name, or description; up to 200 characters' },
+          offset: { type: 'integer', description: 'Optional: which match to start from, default 0' },
+          limit: { type: 'integer', description: 'Optional: 1-20 matches per page, default 10' },
+          names: { type: 'array', items: { type: 'string' }, description: 'Optional: exact tool names to load, up to 20 per call; omit to search only' },
         },
         output: TEXT_OUTPUT,
         isConcurrencySafe: () => false,
@@ -134,13 +134,13 @@ export function createToolTrimModule(ctx, config, stats, deps = {}) {
       gate.definition = definition
       ownedDefinitions.add(definition)
       const effect = gate.tools.register(definition)
-      if (typeof effect !== 'function') throw Error('register 未返回可撤销句柄')
+      if (typeof effect !== 'function') throw Error('register returned no undoable handle')
       if (!live(gate)) { dispose(effect); return false }
       gate.metaDisposer = effect
       return getView(gate.tools, gate.agent)?.visible.get(config.mcpLoadToolName) === definition
     } catch (err) {
       gate.definition = undefined
-      warn('发现工具注册失败，MCP 保持原可见性: ' + (err?.message ?? err))
+      warn('meta-tool registration failed; MCP visibility unchanged: ' + (err?.message ?? err))
       return false
     }
   }
@@ -155,7 +155,7 @@ export function createToolTrimModule(ctx, config, stats, deps = {}) {
       const catalog = new Map()
       if (config.mcpLazy && (!view || typeof defineTool !== 'function') && !warnedCompatibility) {
         warnedCompatibility = true
-        warn('缺少可靠 tools.view 或 defineTool，停用懒加载并保留显式静态限制')
+        warn('no reliable tools.view or defineTool; disabling lazy loading and keeping explicit static restrictions')
       }
       if (config.mcpLazy && typeof defineTool === 'function' && view) {
         // Read global definitions for metadata only: a hidden name stays known.
@@ -189,7 +189,7 @@ export function createToolTrimModule(ctx, config, stats, deps = {}) {
 
   function execute(args, exec) {
     const gate = gates.get(exec?.agent?.id)
-    if (!gate || gate.agent !== exec.agent || !live(gate)) return '未找到本会话的 MCP 门控状态，加载未生效'
+    if (!gate || gate.agent !== exec.agent || !live(gate)) return 'No MCP gate state found for this session; the load did not take effect'
     refresh(gate)
     const input = Array.isArray(args?.names) ? args.names : []
     const names = [...new Set(input.slice(0, MAX_LOAD).filter(name => typeof name === 'string'))]
@@ -197,8 +197,8 @@ export function createToolTrimModule(ctx, config, stats, deps = {}) {
     const proposed = new Set(before)
     const failed = [], loaded = []
     for (const name of names) {
-      if (!gate.catalog.has(name)) failed.push({ name: label(name), reason: '未知或已断开' })
-      else if (!allowed(name)) failed.push({ name: label(name), reason: '用户 allow/deny 限制' })
+      if (!gate.catalog.has(name)) failed.push({ name: label(name), reason: 'unknown or disconnected' })
+      else if (!allowed(name)) failed.push({ name: label(name), reason: 'restricted by user allow/deny' })
       else proposed.add(name)
     }
     const attempted = names.filter(name => gate.catalog.has(name) && allowed(name))
@@ -208,7 +208,7 @@ export function createToolTrimModule(ctx, config, stats, deps = {}) {
     for (const name of attempted) {
       if (applied && visible?.has(name)) loaded.push(name)
       else {
-        failed.push({ name: label(name), reason: applied ? '仍受其他作用域限制，尚不可调用' : '加载过滤未生效，请重试' })
+        failed.push({ name: label(name), reason: applied ? 'still restricted by another scope; not callable yet' : 'the load filter did not take effect; retry' })
         if (!before.has(name)) rollback.delete(name)
       }
     }
@@ -224,7 +224,7 @@ export function createToolTrimModule(ctx, config, stats, deps = {}) {
       name: label(name), description: entry.description.replace(/\s+/g, ' ').slice(0, 120),
       state: finalView?.visible.has(name) ? 'available' : 'unloaded_or_restricted',
     }))
-    return '已放行: ' + (loaded.map(label).join(', ') || '(无)') + '\n' + JSON.stringify({
+    return 'Released: ' + (loaded.map(label).join(', ') || '(none)') + '\n' + JSON.stringify({
       failed, ignoredNames: Math.max(0, input.length - MAX_LOAD),
       total: [...gate.catalog.keys()].filter(allowed).length, matched: matches.length, offset, limit,
       nextOffset: offset + items.length < matches.length && items.length ? offset + items.length : null,
@@ -240,12 +240,12 @@ export function createToolTrimModule(ctx, config, stats, deps = {}) {
     if (previous) destroy(previous)
     const gate = { agent, tools: agent.ctx.tools, catalog: new Map(), released: new Set(), dead: false, refreshing: false }
     gates.set(agent.id, gate)
-    try { refresh(gate) } catch (err) { warn('初始化失败: ' + (err?.message ?? err)) }
+    try { refresh(gate) } catch (err) { warn('init failed: ' + (err?.message ?? err)) }
   }
   const onChange = () => {
     if (closed) return
     for (const gate of [...gates.values()]) {
-      try { refresh(gate) } catch (err) { warn('刷新失败: ' + (err?.message ?? err)) }
+      try { refresh(gate) } catch (err) { warn('refresh failed: ' + (err?.message ?? err)) }
     }
   }
   const onDisposed = payload => {

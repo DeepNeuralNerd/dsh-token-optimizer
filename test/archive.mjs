@@ -43,7 +43,7 @@ const defineTool = vm.runInNewContext(clip(host['dsh-tools'], '//#region lib/typ
   isJsonValue(value) { try { return JSON.stringify(value) !== undefined } catch { return false } },
 })
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }
-const original = { id: 'u-1', source: { kind: 'user' }, content: [{ type: 'text', text: '虚构原文\n  a  b  \n预算318元；截止周五17:23。😀' }] }
+const original = { id: 'u-1', source: { kind: 'user' }, content: [{ type: 'text', text: 'fictional original\n  a  b  \nbudget 318 yuan; due Friday17:23.😀' }] }
 const deadline = async predicate => {
   const until = Date.now() + 3000
   while (!predicate()) { assert.ok(Date.now() < until, 'condition timeout'); await new Promise(r => setTimeout(r, 10)) }
@@ -132,7 +132,7 @@ test('raw fsync precedes transformations and admission; exact Unicode/raw blocks
   const h = harness('before-input', { fault: async type => { if (type === 'sync' && held) { entered.resolve(); await gate.promise } } })
   h.ctx.on('agent/pre-step', async (_payload, next) => {
     const result = await next(); h.trace.push('transform')
-    return { ...result, messages: result.messages.map(m => ({ ...m, content: [{ type: 'text', text: '摘要' }] })) }
+    return { ...result, messages: result.messages.map(m => ({ ...m, content: [{ type: 'text', text: 'summary' }] })) }
   })
   try {
     h.send(); let done = false; const task = h.step().then(r => { done = true; return r })
@@ -141,7 +141,7 @@ test('raw fsync precedes transformations and admission; exact Unicode/raw blocks
     held = false; gate.resolve(); await task; await h.archive.ensure(h.session)
     assert.ok(h.trace.indexOf('durable-ack') < h.trace.indexOf('transform'))
     assert.ok(h.trace.indexOf('transform') < h.trace.indexOf('admit'))
-    const result = await h.archive.query(h.session, { action: 'search', query: '预算318元' })
+    const result = await h.archive.query(h.session, { action: 'search', query: 'budget 318 yuan' })
     const meta = result.records.find(r => r.role === 'user-original')
     assert.ok(meta)
     const raw = await h.archive.query(h.session, { action: 'read', key: meta.key })
@@ -196,7 +196,7 @@ for (const recovery of ['path', 'off']) test('paused input can recover by ' + re
     await task
     assert.equal(h.events.filter(e => e.type === 'user/message').length, 1)
     if (recovery === 'path') assert.equal(h.archive.status(h.session).error, null)
-    else assert.match(h.archive.status(h.session).state, /关闭/)
+    else assert.match(h.archive.status(h.session).state, /off/)
   } finally { fail = false; h.cfg.archive.enabled = false; await h.archive.dispose() }
 })
 
@@ -205,13 +205,13 @@ for (const purpose of ['agent-loop', 'compaction']) test('output durability gate
   const gate = deferred(), entered = deferred()
   const h = harness('output-' + purpose, { fault: async type => { if (type === 'sync' && held) { entered.resolve(); await gate.promise } } })
   try {
-    h.session.append('assistant/message', { message: { role: 'assistant', content: [{ type: 'text', text: '虚构回答需要保留细节' }] }, interrupted: true })
+    h.session.append('assistant/message', { message: { role: 'assistant', content: [{ type: 'text', text: 'fictional reply needs keep details' }] }, interrupted: true })
     const task = h.model(purpose)
     await entered.promise; assert.equal(h.calls(), 0)
     held = false; gate.resolve(); await task
     assert.equal(h.calls(), 1)
     assert.ok(h.trace.indexOf('durable-ack') < h.trace.indexOf('dispatch:' + purpose))
-    const page = await h.archive.query(h.session, { query: '保留细节' })
+    const page = await h.archive.query(h.session, { query: 'keep details' })
     assert.equal(page.records[0].role, 'assistant/message')
   } finally { held = false; gate.resolve(); await h.archive.dispose() }
 })
@@ -221,7 +221,7 @@ test('checkpoint flush rejection blocks dispatch even if policy is registered ou
   try {
     // Install a prepended real policy listener outside optimizer's listener.
     const other = { ...h.ctx, on(name, fn) { h.ctx.on(name, fn, { prepend: true }) } }; policy(other)
-    h.session.append('assistant/message', { message: { content: '虚构输出' } })
+    h.session.append('assistant/message', { message: { content: 'fictional output' } })
     await assert.rejects(h.model('compaction'))
     assert.equal(h.calls(), 0)
   } finally { h.cfg.archive.enabled = false; await h.archive.dispose() }
@@ -231,23 +231,23 @@ test('path change/restart deduplicate native events and keep old segments search
   const h = harness('restart')
   let archive = h.archive
   try {
-    const text = '保留😀中文\n  原句  '.repeat(700) + '末尾独特标记739'
+    const text = 'keep😀English\n  original sentence  '.repeat(700) + 'tail-unique-marker-739'
     const message = { ...original, content: [{ type: 'text', text }] }
     h.send(message); await h.step(); await archive.ensure(h.session)
     const old = h.cfg.archive.directory
     h.cfg.archive.previousDirectories = [old]; h.cfg.archive.directory = join(root, 'restart-new')
-    h.session.append('assistant/message', { message: { content: '新目录中的回复' } })
+    h.session.append('assistant/message', { message: { content: 'reply in the new directory' } })
     await archive.ensure(h.session); await archive.dispose()
     archive = createArchiveModule(h.ctx, () => h.cfg, { defineTool })
     h.ctx.emit('agent/created', { agent: h.agent })
     await archive.ensure(h.session)
-    let found = await archive.query(h.session, { query: '末尾独特标记739', limit: 1 })
+    let found = await archive.query(h.session, { query: 'tail-unique-marker-739', limit: 1 })
     const key = found.records[0].key
     assert.equal(found.records[0].role, 'user-original')
     let offset = 0, joined = ''
     do { const part = await archive.query(h.session, { action: 'read', key, offset, limit: 97 }); joined += part.text; offset = part.nextOffset } while (offset !== null)
     assert.equal(joined, text)
-    found = await archive.query(h.session, { query: '新目录中的回复' }); assert.equal(found.records.length, 1)
+    found = await archive.query(h.session, { query: 'reply in the new directory' }); assert.equal(found.records.length, 1)
     const first = await archive.query(h.session, { limit: 1 }); assert.ok(first.nextOffset !== null)
     const list = await archive.query(h.session); assert.equal(list.records.filter(r => r.role === 'user-original').length, 1)
   } finally { await archive.dispose() }
@@ -258,7 +258,7 @@ test('assistant stream captures abandoned frames and does not collide across age
   try {
     const frames = [
       { type: 'start', attemptId: 'same:1', revision: 1, turn: 1, step: 1 },
-      { type: 'chunk', attemptId: 'same:1', revision: 2, index: 0, chunk: { type: 'text', text: '部分内容' } },
+      { type: 'chunk', attemptId: 'same:1', revision: 2, index: 0, chunk: { type: 'text', text: 'partial content' } },
       { type: 'end', attemptId: 'same:1', revision: 3, index: 1, outcome: { kind: 'abandoned' } },
     ]
     for (let i = 0; i < 2; i++) {
@@ -333,7 +333,7 @@ for (const fail of [false, true]) test('installed compaction transaction ' + (fa
   try {
     // Put real checkpoint policy outside optimizer so failure rejects and closes the native transaction.
     const other = { ...h.ctx, on(name, fn) { h.ctx.on(name, fn, { prepend: true }) } }; policy(other)
-    h.session.append('assistant/attempt', { message: { content: '虚构中断的输出' }, outcome: 'interrupted' })
+    h.session.append('assistant/attempt', { message: { content: 'fictional interrupted output' }, outcome: 'interrupted' })
     let done = false
     const task = compact({}, h.session, 0, 1, h.agent, { owner: null, stability: 'whole-surface' }, h.agent.phase.abort.signal).then(v => { done = true; return v })
     const result = task.then(() => ({ ok: true }), () => ({ ok: false }))
@@ -345,7 +345,7 @@ for (const fail of [false, true]) test('installed compaction transaction ' + (fa
     assert.equal(h.events.filter(e => e.type === 'compaction/end').length, 1)
     if (!fail) {
       assert.ok(h.trace.indexOf('durable-ack') < h.trace.indexOf('dispatch:compaction'))
-      const found = await h.archive.query(h.session, { query: '中断的输出' })
+      const found = await h.archive.query(h.session, { query: 'interrupted output' })
       assert.equal(found.records[0].role, 'assistant/attempt')
       // The coverage marker confirms an awaited archive checkpoint, not summary success.
       const checkpoints = await h.archive.query(h.session, { role: 'checkpoint' })
@@ -373,7 +373,7 @@ test('enabled archive blocks request when injected sessions are not available', 
   const ctx=restrictSessionService({on:(n,fn)=>handlers.set(n,fn),off:()=>{},inject:()=>undefined})
   const archive=createArchiveModule(ctx,{archive:{enabled:true,directory:join(root,'unavailable')}},{defineTool})
   try{
-    await assert.rejects(async()=>{for await(const frame of handlers.get('llm/stream')({sessionId:'synthetic-missing'},()=>{calls++;return(async function*(){})()})){}},/会话服务.*未就绪/)
+    await assert.rejects(async()=>{for await(const frame of handlers.get('llm/stream')({sessionId:'synthetic-missing'},()=>{calls++;return(async function*(){})()})){}},/session service.*not ready/)
     assert.equal(calls,0)
   }finally{await archive.dispose()}
 })
@@ -386,7 +386,7 @@ test('archive request follows injected sessions lifecycle without stale service 
   const service=()=>({sessions:{get(){lookups++;return undefined}},effect(fn){release=fn()}})
   try{
     injectSessions(service());await dispatch();assert.equal(calls,1);assert.equal(lookups,1)
-    release();await assert.rejects(dispatch,/会话服务.*未就绪/);assert.equal(calls,1);assert.equal(lookups,1)
+    release();await assert.rejects(dispatch,/session service.*not ready/);assert.equal(calls,1);assert.equal(lookups,1)
     injectSessions(service());await dispatch();assert.equal(calls,2);assert.equal(lookups,2)
   }finally{await archive.dispose()}
 })

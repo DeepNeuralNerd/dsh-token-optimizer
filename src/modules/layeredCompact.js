@@ -1,5 +1,5 @@
-// L0 观测；L1 清理可回放的历史工具结果；L2 在复测后尝试模型摘要。
-// 清理不是保留全部任务细节的承诺；摘要可回查也不等于无损。
+// L0 observes; L1 clears replayable historical tool results; L2 tries a model summary after re-measuring.
+// Cleanup is not a promise to keep every task detail; a retrievable summary is not the same as lossless.
 import {
   computePressure, compressionServices, bumpCompression, recordCompression, retryKey, runSummary,
 } from './compactionDriver.js'
@@ -51,7 +51,7 @@ export function createLayeredCompactModule(ctx, config, stats) {
         note('prune', failure ? 'failed' : saved === null ? 'noPressure' : saved > 0 ? 'success' : 'noop', {
           before: p, after: current, savedTokens: failure ? null : saved, durationMs: Date.now() - started,
         })
-        if (!current) return // 复测失败时不根据旧压力盲目请求摘要
+        if (!current) return // on a failed re-measurement, do not request a summary based on stale pressure
       }
       if (current.ratio < cfg.highRatio) return
       if (st.done >= cfg.highTierMaxPerSession) { note('summary', 'limit', { before: current }); return }
@@ -83,14 +83,14 @@ export function createLayeredCompactModule(ctx, config, stats) {
     }
   }
   const onDisposed = ({ agent } = {}) => {
-    states.get(agent?.id)?.abort?.abort(new DOMException('会话已关闭', 'AbortError'))
+    states.get(agent?.id)?.abort?.abort(new DOMException('session closed', 'AbortError'))
     states.delete(agent?.id)
   }
   ctx.on('agent/status', onStatus)
   ctx.on('agent/disposed', onDisposed)
   return () => {
     active = false
-    for (const st of states.values()) st.abort?.abort(new DOMException('插件已卸载', 'AbortError'))
+    for (const st of states.values()) st.abort?.abort(new DOMException('plugin unloaded', 'AbortError'))
     states.clear()
     services.dispose()
     summaries.dispose()
