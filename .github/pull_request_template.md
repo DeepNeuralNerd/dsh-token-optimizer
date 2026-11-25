@@ -1,20 +1,20 @@
-## 描述 (Description)
-请在此简要描述此 PR 的更改内容，以及它解决了什么问题。
+## Description
+Briefly describe what this PR changes and which problem it solves.
 
-关联 Issue: # (请填写对应的 Issue 编号，如果没有可以删除这行)
+Related issue: # (fill in the issue number, or delete this line if there is none)
 
-## 更改类型 (Type of Change)
-- [ ] Bug 修复 (Bug fix)
-- [ ] 新功能 (New feature)
-- [ ] 文档更新 (Documentation update)
-- [ ] 性能优化/重构 (Refactor/Performance)
-- [ ] 其他 (Other)
+## Type of Change
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Documentation update
+- [ ] Refactor/Performance
+- [ ] Other
 
-## 检查清单 (Checklist)
-- [ ] 我已经在本地运行了 `npm test` 并确保测试通过
-- [ ] 我已经阅读并遵守了 `CONTRIBUTING.md` 中的规范
-- [ ] 我已经对相关代码进行了必要的注释和文档更新
-- [ ] 我的更改没有引入新的语法警告或安全漏洞
+## Checklist
+- [ ] I ran `npm test` locally and all tests pass
+- [ ] I have read and followed the conventions in `CONTRIBUTING.md`
+- [ ] I added the necessary comments and documentation updates to the affected code
+- [ ] My changes introduce no new syntax warnings or security vulnerabilities
 
-## 截图或补充说明 (Screenshots / Additional Context)
-(如果适用，请在此处添加截图或说明，方便维护者 Review)
+## Screenshots / Additional Context
+(If applicable, add screenshots or notes here to help reviewers.)

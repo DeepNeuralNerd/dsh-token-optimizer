@@ -1,159 +1,159 @@
-# dsh-token-optimizer & dsh-behavior-enhancer — 技术决策记录
+# dsh-token-optimizer & dsh-behavior-enhancer — Technical Decision Records
 
 > **Design Decisions & Technical Report**
-> 本记录以"问题 → 方案 → 为什么这么设计 → 实测结果"的方式，
-> 梳理两个插件在真实 DSH（DeepSeek Harness）插件 API 上做对的几个关键判断。
-> 所有数据均为真实会话实测，未虚构。
+> This record walks through the key calls the two plugins got right while building on the real DSH (DeepSeek Harness)
+> plugin API, in the form "problem → solution → why designed this way → measured results".
+> All data comes from real-session measurements; nothing is fabricated.
 
 ---
 
-## 0. 项目背景
+## 0. Project background
 
-DSH（DeepSeek Harness）是一个 **Cordis 插件宿主**，插件通过 `ctx.on(event, handler)` 挂在真实事件上。
-两个插件分工：
+DSH (DeepSeek Harness) is a **Cordis plugin host**; plugins attach to real events via `ctx.on(event, handler)`.
+The two plugins divide the work:
 
-| 插件 | 管什么 | 一句话 |
+| Plugin | What it manages | In one sentence |
 | :--- | :--- | :--- |
-| **dsh-token-optimizer** | 进入模型的**内容** | 压缩/裁剪/采样/摘要，降低 token 开销 |
-| **dsh-behavior-enhancer** | 模型**怎么调用工具** | 行为纪律/失败收敛/并行度恢复，提升稳定性 |
+| **dsh-token-optimizer** | The **content** entering the model | Compress/trim/sample/summarize to lower token cost |
+| **dsh-behavior-enhancer** | **How the model calls tools** | Behavioral discipline / failure convergence / parallelism recovery for stability |
 
-两者互相独立、可单独安装。本文聚焦四个有工程深度的技术决策。
+They are independent and installable separately. This document focuses on four technically deep decisions.
 
 ---
 
-## 1. 「只做核心之外的增量」——边界优先的架构判断
+## 1. "Only the increment beyond the core" — a boundary-first architectural call
 
-### 问题
-DSH 核心**已经内置**了 `token-meter`、`compaction-basic`、`tool-result-pruner`、`spill`、`llm-retry`。
-如果插件把这些**再实现一遍**，是重复造轮子，还会和核心打架，甚至破坏稳定性。
+### Problem
+The DSH core **already ships** `token-meter`, `compaction-basic`, `tool-result-pruner`, `spill`, and `llm-retry`.
+If a plugin **re-implements** them, it reinvents the wheel, fights the core, and can even break stability.
 
-### 方案
-**明确拒绝重复实现核心已有能力**，只做它们**覆盖不到的区间**。
+### Solution
+**Explicitly refuse to re-implement core capabilities**; cover only the ranges they **do not reach**.
 
-| 核心内置 | 本插件对应补充 | 补充的缝隙 |
+| Core built-in | Plugin counterpart | The gap being filled |
 | :--- | :--- | :--- |
-| spill（>50k 字节） | outputLadder | **8k–50k 字符的"裸奔区"**（spill 管不到、pruner 只有压缩触发才动） |
-| tool-result-pruner（8192 字符） | outputLadder 采样 | shell 输出头尾+等距采样，带行号 |
-| compact basic（0.8 阈值） | compactionDriver | **0.8 阈值对 1M 窗口模型几乎永不触发**；本模块拉低到 0.45 让压缩真的发生 |
-| （MCP 工具 schema 全量注入） | toolTrim / mcpLazy | **不用的 MCP 工具 schema 不进请求** |
+| spill (>50k bytes) | outputLadder | **The 8k–50k character "wild zone"** (spill does not reach it; the pruner only acts when compaction triggers) |
+| tool-result-pruner (8192 chars) | outputLadder sampling | Shell output head/tail + equidistant sampling, with line numbers |
+| compaction basic (0.8 threshold) | compactionDriver | **The 0.8 threshold almost never fires for 1M-window models**; this module lowers it to 0.45 so compaction actually happens |
+| (full MCP tool schema injection) | toolTrim / mcpLazy | **Unused MCP tool schemas never enter the request** |
 
-### 为什么这么设计
-核心源码核实出的**边界**是设计前提——把"核心已解决的"和"核心忽略的"划清，插件才是**真增量**，而不是重复或对抗。
+### Why designed this way
+The **boundaries** verified from core source are the design premise — only by separating "what the core already solves" from "what the core leaves alone" does a plugin become a **true increment**, not duplication or friction.
 
-### 实测结果
-- `outputLadder`：**单次实测**（9-1 会话，8 个 9k–50k 字符裸奔输出被采样）省约 **10% 总输入**；常态比例待进一步统计。
-- `toolTrim + mcpLazy`：24 个 modlens MCP 工具 schema（≈ **9,362 token**）被拦在请求外，每请求省固定开销 9k。
-- `compactionDriver`：让上下文压缩**从"理论"变"实际会跑"**（核心 0.8 阈值在 1M 窗口下实测 49 万 token 也未触发）。
-
----
-
-## 2. restrict 死循环事故：一次 OOM 级事故催生的三重防护
-
-### 问题（真实事故）
-`tools.restrict()` 会改变工具可见性并**触发 `tools/change` 事件**。
-插件若监听 `tools/change` 做重挂 → 重挂又调用 `restrict` → 又触发 `tools/change` → …
-**形成死循环，130 万次把 DSH harness 直接 OOM 崩掉（exit 134）。**
-
-### 方案（三重防护）
-1. **`filterKey` 幂等**：`JSON.stringify(filter)` 作为键，filter 没变就不重挂。restrict 只在**成功**后才记录 filterKey，失败不记录（允许下次用同 filter 重试）。
-2. **工具集变化检测**：`onToolsChange` 重新发现 MCP 工具名，**先比对**是否真的变了；无真实变化直接返回（防"change→重挂→change"循环）。
-3. **"already registered"视为成功**：挂载时若报同名已注册（重复事件/作用域残留），视为已注册，不再重试。
-
-### 为什么这么设计
-这是**幂等性 + 变化检测**的经典组合：**让"响应事件的动作"本身不再触发"要响应的事件"**。
-严格遵循契约："先挂新、后撤旧"（fail-closed），挂新失败则旧 gate 原样保留，**绝不提前放行**。
-
-### 实测结果
-- 回归测试：连续 20 次 `tools/change` 事件，无真实变化时**不再重挂**（restrict 次数不变），死循环被切断。
-- 这个 bug 的根因是「**副作用触发自身被监听的事件**」，是一道很好的工程题。
+### Measured results
+- `outputLadder`: a **single measurement** (a Sept. 1 session; eight 9k–50k character wild-zone outputs sampled) saved about **10% of total input**; the steady-state rate is still being gathered.
+- `toolTrim + mcpLazy`: 24 modlens MCP tool schemas (about **9,362 tokens**) kept out of requests — a fixed 9k saving per request.
+- `compactionDriver`: moved context compaction **from "theoretical" to "actually runs"** (the core 0.8 threshold never triggered even at a measured 490k tokens in a 1M window).
 
 ---
 
-## 3. 两档失败识别：理解工具层 vs 命令层的边界
+## 2. The restrict death-loop incident: triple guards born of an OOM-level accident
 
-### 问题
-DSH 的 `pwsh` 工具**只有基础设施错误**（spawn 失败/中止）才标 `isError: true`。
-**命令级失败**（非零退出码 / stderr 报错）作为**普通成功结果**返回——
-实测：`$ErrorActionPreference='Stop'; Get-Item missing` 的结果是 `isError: false`，内容带 `[stderr] ... [exit code: 1]`。
+### Problem (a real incident)
+`tools.restrict()` changes tool visibility and **fires the `tools/change` event**.
+If a plugin listens to `tools/change` to re-register → re-registering calls `restrict` again → fires `tools/change` again → …
+**It formed a death loop that OOM-crashed the DSH harness after 1.3 million iterations (exit 134).**
 
-如果并行收敛只判断 `result.isError`，**命令级失败会被当成成功**，串行化永远不触发——这是测试中最容易踩的坑。
+### Solution (three guards)
+1. **`filterKey` idempotence**: use `JSON.stringify(filter)` as the key; no re-registration when the filter is unchanged. The filterKey is recorded only after restrict **succeeds**; failures are not recorded (so the next attempt may retry with the same filter).
+2. **Toolset change detection**: `onToolsChange` re-discovers MCP tool names and **compares first** whether anything really changed; without a real change it returns immediately (breaking the "change → re-register → change" loop).
+3. **Treat "already registered" as success**: if mounting reports a duplicate name (repeat events / leftover scopes), treat it as registered and stop retrying.
 
-### 方案（`detectFailure`）
-新增**命令级失败识别**（`stderrAsFailure`，默认开）：
-1. **非零退出码**（最强信号）：正则 `[exit code: 1-9]`。
-2. **stderr 典型错误签名**：`error|failed|exception|cannot|not found|no such file|does not exist|access denied|找不到|不存在|拒绝访问|无法`，并**避开 warning 类噪音**。
+### Why designed this way
+A classic combination of **idempotence + change detection**: **the action that responds to an event must not itself trigger the event it is responding to**.
+Strict contract compliance: "register the new, then withdraw the old" (fail-closed). If registering the new one fails, the old gate stays exactly as it was — **never released early**.
 
-### 为什么这么设计
-这是对**工具边界语义的逆向理解**——不只看"工具说没失败"，还要看"命令实际失败没失败"。
-两档（`isError` + 命令级签名）互为补充，命令级签名用正则而非结构化 API，因为 DSH 把命令结果平铺进 content 文本。
-
-### 实测结果
-- 用 `Get-Item missing` 触发，`detectFailure` 正确识别为失败 → `serialize()` 触发，并行池上限压到 1。
-- **诚实边界**：正则偏英文 Windows 报错路径；中文 or 无 exit code 的服务端错误可能漏检——这是后续需要补强的点。
+### Measured results
+- Regression test: 20 consecutive `tools/change` events with no real change cause **no re-registration** (the restrict count stays the same); the death loop is cut.
+- The root cause was "**a side effect triggering the very event being listened for**" — an excellent engineering lesson.
 
 ---
 
-## 4. 跨进程状态持久化：修复"陈旧并行度永不还原"
+## 3. Two-tier failure detection: understanding the tool layer vs the command layer
 
-### 问题
-`parallelConvergence` 在**工具失败时**把 `maxParallelToolCalls` 压到 1，**连续成功恢复**。
-但若"串行化之后、恢复之前"**进程被杀 / 会话未结束**，新实例启动时 `serialized = false`，
-**那份陈旧但真实的 `maxParallelToolCalls = 1` 永远不被还原**——用户的并行度被永久卡在 1。
+### Problem
+DSH's `pwsh` tool marks `isError: true` **only for infrastructure errors** (spawn failures/aborts).
+**Command-level failures** (non-zero exit codes / stderr errors) come back as **ordinary successful results** —
+measured: `$ErrorActionPreference='Stop'; Get-Item missing` returns `isError: false` with content carrying `[stderr] ... [exit code: 1]`.
 
-### 方案（`state.json` 跨 boot 持久化）
-1. **串行化时落盘**：`serialize()` 写入 `~/.dsh/behavior-enhancer/state.json`，记录 `{ serialized: true, originalParallel }`。
-2. **启动接管还原**：`ctx.inject(['settings'])` 回调里，若读到 `stale.serialized && 当前值 === 1`，则还原到 `originalParallel`，并打印接管日志。
-3. **还原时清除**：`restore()` 调用 `clearState()` 删除文件。
+If parallel convergence only checks `result.isError`, **command-level failures count as success** and serialization never triggers — the easiest trap in testing.
 
-### 为什么这么设计
-这是**分布式/长期运行进程的状态持久化**经典问题：**"进程没了，但它在内存里擅自改过的共享状态还在"**。
-把"中断后的状态留痕"落盘，重启时主动接管，保证**篡改的状态最终一定被还原**，而不是永久残留。
+### Solution (`detectFailure`)
+Added **command-level failure detection** (`stderrAsFailure`, on by default):
+1. **Non-zero exit codes** (the strongest signal): regex `[exit code: 1-9]`.
+2. **Typical stderr error signatures**: `error|failed|exception|cannot|not found|no such file|does not exist|access denied|not found|does not exist|access denied|unable to`, while **avoiding warning-class noise**.
 
-### 实测结果
-- 构造 `serialized: true` 状态文件 → 插件启动检测并还原 → 文件被清除。
-- **交叉验证**：测试会话里 `state.json` 从 `{"serialized":true,...}` → 成功 3 次后被 `clearState()` 删除，证明 `restore()` 真实执行。
+### Why designed this way
+This is a **reverse-engineered understanding of tool-boundary semantics** — do not only check "did the tool say it failed"; also check "did the command actually fail".
+The two tiers (`isError` + command-level signatures) complement each other; command-level signatures use regex rather than a structured API because DSH flattens command results into the content text.
 
----
-
-## 5. 让「省钱 × 稳定性」成对展示
-
-- **dsh-token-optimizer**：管内容，直接省 token（长文转图常态省 60%–70%，极端样本可到 90%+；输出压缩、MCP 懒加载省 9k/请求、缓存命中率长会话常态 97%–99.3%，单次最优样本 99.75%）。
-
-> 这正是本项目的差异化：**不在"省钱"或"稳定"单点上挤，而是作为一对互补的工程方案**。
+### Measured results
+- Triggered with `Get-Item missing`, `detectFailure` correctly identifies a failure → `serialize()` fires and the parallel pool cap drops to 1.
+- **Honest boundary**: the regex leans on English Windows error paths; Chinese or exit-code-less server errors can be missed — a known area for future hardening.
 
 ---
 
-## 附：实测数据汇总
+## 4. Cross-process state persistence: fixing "stale parallelism never restored"
 
-| 模块 | 实测 |
+### Problem
+`parallelConvergence` squeezes `maxParallelToolCalls` down to 1 on a **tool failure** and **recovers after consecutive successes**.
+But if the **process is killed / the session never ends** after serialization and before recovery, a new instance starts with `serialized = false`, and
+**that stale-but-real `maxParallelToolCalls = 1` is never restored** — the user's parallelism stays stuck at 1 forever.
+
+### Solution (`state.json` persistence across boots)
+1. **Persist on serialization**: `serialize()` writes `~/.dsh/behavior-enhancer/state.json` recording `{ serialized: true, originalParallel }`.
+2. **Take over and restore at boot**: in the `ctx.inject(['settings'])` callback, if `stale.serialized && current value === 1`, restore to `originalParallel` and log the takeover.
+3. **Clear on restore**: `restore()` calls `clearState()` to delete the file.
+
+### Why designed this way
+The classic **state-persistence problem of distributed/long-running processes**: "the process is gone, but the shared state it tampered with in memory is still there".
+Persisting "the trace of an interrupted state" and actively taking over at boot guarantees that **a tampered state is always eventually restored**, never left behind forever.
+
+### Measured results
+- Crafted a `serialized: true` state file → the plugin detects and restores it at boot → the file is deleted.
+- **Cross-validation**: in a test session, `state.json` went from `{"serialized":true,...}` → deleted by `clearState()` after 3 successes, proving `restore()` really runs.
+
+---
+
+## 5. Showing "savings × stability" as a pair
+
+- **dsh-token-optimizer**: manages content and saves tokens directly (long-text-to-image routinely saves 60%–70%, extreme samples reach 90%+; output compression and MCP lazy loading save 9k/request; cache hit rate in long sessions is routinely 97%–99.3%, best single sample 99.75%).
+
+> This is exactly the project's differentiation: not squeezing a single point of "savings" or "stability", but **a complementary pair of engineering solutions**.
+
+---
+
+## Appendix: measured data summary
+
+| Module | Measured |
 | :--- | :--- |
-| text2img | 常态省 **60%–70%**（极端样本达 90%+）；忠实度小页分页连续 4 次命中 |
-| outputLadder | 单次实测约省 10%（9-1 会话），常态待统计 |
-| mcpLazy | 24 个 MCP 工具 schema ≈ 9,362 token 拦在请求外 |
-| 缓存命中率 | 长会话常态 **97%–99.3%**（单次最优样本 99.75%）；小会话 ~68% |
-| parallelConvergence | 失败→池压 1；连续 3 次成功→恢复原值；跨进程持久化还原 |
+| text2img | Routinely saves **60%–70%** (extreme samples 90%+); fidelity check on small pages hit 4 runs in a row |
+| outputLadder | About 10% saved in a single measurement (Sept. 1 session); steady state still being gathered |
+| mcpLazy | 24 MCP tool schemas ≈ 9,362 tokens kept out of requests |
+| Cache hit rate | Long sessions routinely **97%–99.3%** (best single sample 99.75%); small sessions ~68% |
+| parallelConvergence | Failure → pool squeezed to 1; 3 consecutive successes → original value restored; cross-process persistent restore |
 
-## 手动 /compact 与插件自动分层压缩的关系(v2.2 新增)
+## Manual /compact vs the plugin's automatic layered compaction (new in v2.2)
 
-**分层压缩(layeredCompact)三级动作与无损性**(默认 enabled:false;启用时自动旁路旧 compactionDriver):
+**The three layered-compaction (layeredCompact) tiers and their losslessness** (enabled:false by default; enabling it automatically bypasses the legacy compactionDriver):
 
-| 层 | 触发 | 真动作 | 无损性 |
+| Tier | Trigger | Real action | Losslessness |
 |---|---|---|---|
-| L0 观测层 | 压力比 ≥ lowRatio(0.4) | 只记账(/token-status 显示"观测区"),**不降压力** | — |
-| L1 无损层 | ≥ midRatio(0.5) | `ctx.toolResultPruner.pruneSession(session)` + tokenMeter 复测;复测后 savedTokens 记账,0 效果如实记 pruneNoop | ✅ 无损(surface 级替换,原文可回放、被遮蔽节点已 cite) |
-| L2 有损层 | ≥ highRatio(0.65) **且 L1 复测后仍超阈** | `compaction.compactNow`(超时保护;按 err.code 分类记账;busy → 本会话退避) | ❌ 有损(LLM 摘要替换历史,原文仅在 append-only 日志) |
+| L0 observation | pressure ratio ≥ lowRatio (0.4) | bookkeeping only (shown as the "observation band" in /token-status), **does not lower pressure** | — |
+| L1 lossless tier | ≥ midRatio (0.5) | `ctx.toolResultPruner.pruneSession(session)` + tokenMeter re-measure; savedTokens recorded after re-measure; zero effect honestly logged as pruneNoop | ✅ lossless (surface-level replacement; originals replayable, masked nodes already cited) |
+| L2 lossy tier | ≥ highRatio (0.65) **and still over threshold after the L1 re-measure** | `compaction.compactNow` (timeout protection; bookkeeping classified by err.code; busy → back off for the session) | ❌ lossy (an LLM summary replaces history; originals only in the append-only log) |
 
-**口径要点**:
-- 本插件的 fileDiff / outputLadder 是**投影级**(tools/post-execute 替换,只影响未来进入模型的结果);
-  L1 的 pruneSession 是 **surface 级**(改写已发送历史)——这正是它能真降当前压力的原因。
-  "不改写已发送历史"只对投影层成立,不是全局事实。
-- 与内核 `compaction-basic` 的边界:内核自带 0.8 阈值、且它自己也是**先 prune 再复测再决定是否有损**
-  的两段式(dsh-compaction-basic/lib/index.js:900-905);对 1M 窗口它几乎不自触发。
-  本插件的 L1 提前到 0.5 打 prune,正是把内核"先无损后有损"的机会从 0.8 提前拿过来。
-- 与手动 `/compact` 的关系:唯一互斥是内核压缩锁(ManualCompactionError busy)+ L2 侧的
-  会话退避(L2 遇 busy 视为"手动/其他压缩正在进行",本会话不再自动有损压缩,实现位置
-  layeredCompact state.backedOff);L0/L1 不受退避影响。
-- 旧 compactionDriver(0.45 阈值、命中即有损)在 layeredCompact 启用时被 src/index.js 自动旁路。
+**Calibration points**:
+- This plugin's fileDiff / outputLadder are **projection-level** (replacements at tools/post-execute, affecting only future results entering the model);
+  L1's pruneSession is **surface-level** (rewriting already-sent history) — which is precisely why it truly lowers current pressure.
+  "Never rewrites already-sent history" holds only for the projection tiers; it is not a global truth.
+- The boundary with the kernel `compaction-basic`: the kernel carries the 0.8 threshold and itself also uses the two-stage "**prune first, re-measure, then decide whether to go lossy**"
+  (dsh-compaction-basic/lib/index.js:900-905); for a 1M window it almost never self-triggers.
+  Moving L1's prune forward to 0.5 is exactly taking the kernel's "lossless first, then lossy" opportunity from 0.8 earlier.
+- The relationship with manual `/compact`: the only mutual exclusion is the kernel compaction lock (ManualCompactionError busy) plus the L2-side
+  session backoff (on busy, L2 assumes "a manual/other compaction is in progress" and stops auto-lossy compaction for the session; implemented in
+  layeredCompact state.backedOff); L0/L1 are unaffected by the backoff.
+- The legacy compactionDriver (0.45 threshold, lossy on hit) is automatically bypassed by src/index.js when layeredCompact is enabled.
 
 ---
-*贡献者：Zoria-Lind*
+*Contributor: Zoria-Lind*

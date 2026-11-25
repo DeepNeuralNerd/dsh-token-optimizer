@@ -1,4 +1,4 @@
-# CI:零依赖项目,跳过安装步骤直接跑测试(node 18/20/22 三档)
+# CI: zero-dependency project; skip the install step and run tests directly (node 18/20/22)
 name: CI
 
 on:

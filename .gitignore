@@ -1,8 +1,6 @@
-﻿node_modules/
+node_modules/
 *.local
 *.log
 .DS_Store
 
-第三方认可/
-
-第三方认可/
+third-party-acknowledgements/

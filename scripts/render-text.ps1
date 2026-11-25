@@ -1,9 +1,9 @@
-﻿param(
+param(
   [string]$text,
   [string]$outPath,
   [int]$width = 1200,
   [int]$fontSize = 18,
-  [int]$maxHeight = 7800  # DeepSeek 视觉 API 长边限制约 8192(实测 8124 过 / 9842 拒),留安全余量
+  [int]$maxHeight = 7800  # DeepSeek vision API long-edge limit is about 8192 (measured: 8124 passes / 9842 rejected); keep a safety margin
 )
 Add-Type -AssemblyName System.Drawing
 
@@ -14,11 +14,11 @@ $budget = $maxHeight - $padding
 
 function Get-LineHeight([string]$s, $g, $f, $w) {
   $h = [Math]::Ceiling($g.MeasureString($s, $f, $w).Height)
-  if ($h -lt $f.Size + 4) { $h = [int]$f.Size + 4 }  # 空行兜底
+  if ($h -lt $f.Size + 4) { $h = [int]$f.Size + 4 }  # fallback for blank lines
   return $h
 }
 
-# 单个逻辑行超过单页预算时,二分切分成多个块(每块高度 <= budget)
+# When one logical line exceeds the per-page budget, binary-split it into blocks (each block height <= budget)
 function Split-LongLine([string]$line, $g, $f, $w, [int]$budget) {
   $result = New-Object System.Collections.Generic.List[string]
   $remaining = $line
@@ -36,7 +36,7 @@ function Split-LongLine([string]$line, $g, $f, $w, [int]$budget) {
   return $result
 }
 
-# ---- 1) 逐逻辑行测量换行后高度,贪心打包成页(每页总高 <= maxHeight) ----
+# ---- 1) Measure wrapped height per logical line, greedily pack into pages (total page height <= maxHeight) ----
 $probe = [System.Drawing.Bitmap]::new(1, 1)
 $g = [System.Drawing.Graphics]::FromImage($probe)
 $rawLines = $text -split "`r?`n"
@@ -46,7 +46,7 @@ $curH = 0
 foreach ($line in $rawLines) {
   $lineH = Get-LineHeight $line $g $font $usableWidth
   if ($lineH -gt $budget) {
-    # 无换行的超长单行:先落当前页,再二分切行逐块成页
+    # An over-long single line with no breaks: flush the current page first, then binary-split the line into pages
     if ($cur.Length -gt 0) {
       $pages.Add($cur.ToString())
       $cur = New-Object System.Text.StringBuilder
@@ -55,7 +55,7 @@ foreach ($line in $rawLines) {
     foreach ($chunk in (Split-LongLine $line $g $font $usableWidth $budget)) { $pages.Add($chunk) }
     continue
   }
-  # 与渲染步骤同一种测量:直接测“候选整页文本”的高度,避免逐行求和误差
+  # Same measurement as the rendering step: measure the height of the candidate full-page text directly to avoid per-line summation error
   $candidate = $cur.ToString()
   if ($candidate.Length -gt 0) { $candidate += "`r`n" }
   $candidate += $line
@@ -79,7 +79,7 @@ if ($pages.Count -gt 40) {
   exit 2
 }
 
-# ---- 2) 逐页渲染:第 1 页写 outPath,后续页写 <base>-p2.png / -p3.png ... ----
+# ---- 2) Render page by page: page 1 writes outPath, later pages write <base>-p2.png / -p3.png ... ----
 $ext = [System.IO.Path]::GetExtension($outPath)
 $base = if ($ext.Length -gt 0) { $outPath.Substring(0, $outPath.Length - $ext.Length) } else { $outPath }
 $totalBytes = 0
@@ -96,7 +96,7 @@ for ($i = 0; $i -lt $pages.Count; $i++) {
 
   $h = [Math]::Ceiling($size.Height) + $padding
   if ($h -lt 200) { $h = 200 }
-  if ($h -gt $maxHeight) { $h = $maxHeight }  # 安全兜底,不应触发
+  if ($h -gt $maxHeight) { $h = $maxHeight }  # safety cap, should not trigger
 
   $bmp = New-Object System.Drawing.Bitmap $width, $h
   $g3 = [System.Drawing.Graphics]::FromImage($bmp)
@@ -111,6 +111,6 @@ for ($i = 0; $i -lt $pages.Count; $i++) {
   $paths.Add($pagePath)
 }
 
-# 输出协议:首行 "OK <总字节> h=<页数> pages=<页数>",随后每行一个分页文件路径
+# Output protocol: first line "OK <total bytes> h=<page count> pages=<page count>", then one page file path per line
 Write-Output ("OK " + $totalBytes + " h=" + $pages.Count + " pages=" + $pages.Count)
 foreach ($p in $paths) { Write-Output $p }

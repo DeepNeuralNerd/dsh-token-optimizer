@@ -1,47 +1,47 @@
-我盼了很久的 DeepSeek Harness，最终还是自己补上了烧钱的窟窿
+# The DeepSeek Harness I waited for so long — in the end I patched its money hole myself
 
-仓库：Zoria-Lind/dsh-token-optimizer（MIT License）
+Repository: Zoria-Lind/dsh-token-optimizer (MIT License)
 
-我是DeepSeek的忠实粉丝。我早先是把DeepSeek接进Claude Code里用的，但一直盼着自家的Harness，盼星星盼月亮，真出来那天，就迫不及待安装用了下——能用，可差强人意：同样的任务，做得没Claude Code好，token却花得只多不少。正好那阵子我一位朋友有天天在我耳边叨叨opencode这种"省 token"的架构，我心里就更不舒服了。
-但我懒得跟他吵，而是琢磨起"Everything is a Plugin"的路子。我决定自己写个插件，把DSH太费token这个钱窟窿补上，此插件，就叫dsh-token-optimizer（社区里有不少和我同名的插件，请认准Zoria-Lind/dsh-token-optimizer嗷）。
+I am a devoted DeepSeek fan. I used to wire DeepSeek into Claude Code, but I always longed for a Harness of our own. The day it finally shipped, I installed it immediately — it works, but it left me underwhelmed: the same tasks came out worse than Claude Code, and the tokens spent were never fewer. Around that time a friend kept nagging me daily about "token-saving" architectures like opencode, which made it sting even more.
+But instead of arguing with him, I started exploring the "Everything is a Plugin" path. I decided to write a plugin myself to patch the money hole of DSH burning too many tokens. This plugin is dsh-token-optimizer (quite a few community plugins share the name, so look for Zoria-Lind/dsh-token-optimizer).
 
-我的构想有原创也有借鉴。
+My design mixes original ideas with borrowed ones.
 
-我是自己想到长文转图思路的。平日里我就喜欢盯着DeepSeek API的更新，那次看到Vision API发布新闻，就迫不及待翻了模型&价格页：一张图才384token（现在它改成按图片尺寸算了，1920×1080一张约369token，且依旧存在384token上限，只会更便宜）。
-天呐！我当时就蠢蠢欲动了。一张图才这么点token，某些著名微博小作文，丢进去都不止了。遑论里面八成的废话，我压根不想看。 那把超长文字渲染成图，让视觉模型读一遍、换成摘要，再进上下文的话，岂不美哉？
-这就是 text2img 的由来。
+The long-text-to-image idea came to me on my own. I like watching DeepSeek API updates, and when the Vision API news dropped I immediately checked the model & pricing page: one image costs only 384 tokens (it is now billed by image size — a 1920×1080 page is about 369 tokens, and the 384-token cap still applies, so it only gets cheaper).
+Amazing! I itched right away. One image costs so few tokens — one of those famous weibo essays would blow past that on its own. And roughly 80% of the filler in them is something I never wanted to read anyway. So why not render very long text into an image, let a vision model read it once, replace it with a summary, and only then feed it into the context?
+That is how text2img was born.
 
-而从朋友那听到的opencode省token的思路，着实给了我不少启发——工具schema的裁剪、输出的压缩这些，我拿来参考了，做了DSH的适配版的toolTrim模块。
-不过一开始也是没做好。tools.restrict() 能藏工具，我调了它一下，就触发一个tools/change事件；我又监听这个事件去重挂，重挂又调restrict……不出意外地出了意外，自己跟自己循环，跑了130万次，把宿主直接OOM崩了（exit 134）。我懵逼了一晚上，然后又问Claude Code又翻日志，才反应过来，改工具的动作，触发了改工具要监听的事件，然后监听里又去改，直接咬成耶梦加得了。
-因而最后补了三道防护：没变就不重挂、真变了才动手、重复注册当成功。回归测试，连发20次change不再重挂，循环断了。
-这简直是最茫然的一集，也是醒悟级别的一集。它让我这个经验尚不丰富的开发者，真正理解了事件驱动的副作用处理最可怕的就是"自己触发自己"。
+The token-saving ideas I heard from my friend's opencode anecdotes genuinely inspired me — tool-schema trimming and output compression became the DSH-adapted toolTrim module.
+But the first attempt failed. tools.restrict() hides tools; calling it fired a tools/change event; I listened for that event to re-register; re-registering called restrict again… and of course something unexpected happened: it looped with itself 1.3 million times and OOM-crashed the host (exit 134). I was baffled for an evening — asking Claude Code, reading logs — before realizing that the act of changing tools triggered the very event my listener was watching, and the listener then changed tools again: it had bitten its own tail like Jörmungandr.
+So I added three guards: no re-registration when nothing changed, act only on real changes, and treat duplicate registration as success. The regression test fires 20 change events with no re-registration; the loop is broken.
+That was the most bewildering episode — and also an epiphany-level one. As a still-inexperienced developer, I truly learned that in event-driven side-effect handling, the scariest pattern is "triggering yourself".
 
-在做mcpLazy（MCP 工具懒加载）之前，我跟AI讨论过思路可行性，结果连着三次都被毙了，谁家AI我就不透露了。可我就是不甘心得觉都睡不着，半夜爬起来硬是做成了。
+Before building mcpLazy (MCP tool lazy-loading), I discussed the idea's feasibility with an AI and got rejected three times in a row — I will not say which AI. But I was too restless to sleep, got up in the middle of the night, and made it work.
 
-但我最想说的是，我做的不是照搬，是看懂DSH的有无之后的适配。
+Still, the point I most want to make is this: what I built is not a copy, it is an adaptation made after understanding what DSH already has and does not have.
 
-我一开始只是想玩玩社区里的插件，结果发现大概三成的插件，跟DSH本体功能是重合的，装上去后还跟本体打架，这让我意识到：光有想法不够，还得先搞懂DSH已经做了什么和还该做什么，不要白费力气。
+At first I just wanted to try community plugins, and I found roughly 30% of them duplicate what DSH itself already does — and then fight the core after installation. That taught me: an idea alone is not enough; you must first understand what DSH already does and what it still should do, so effort is not wasted.
 
-于是我定下了插件的边界：
-核心已经做好的，我不重复。token-meter、compaction、pruner、spill、llm-retry这些，DSH都内置了，我就不折腾了。
-只做核心没管到的那段。比如 DSH 的自带压缩要0.8才触发，可在1M窗口下，普通会话根本到不了80万token——那段它是真的不管，就轮到我补了。
-用真实存在的钩子，别折腾虚拟的。故版本迭代时我把那些"未经核查以为存在"的虚拟钩子都换成了DSH真实支持的钩子。
-其实还有个黑历史级别的粗心事儿。做失败识别的时候，我一开始没想清楚识别逻辑（dsh核心只有基础设施错误才标isError，命令级失败给当成成功了），结果做完挂载测试后发现根本没触发，问了DSH本体后，我才发现问题所在，然后又回去修。
+So I fixed the plugin's boundaries:
+What the core already does well, I do not redo. token-meter, compaction, pruner, spill, llm-retry are built into DSH — hands off.
+Only fill the gap the core leaves open. For example, DSH's built-in compaction triggers at 0.8, but in a 1M window an ordinary session never reaches 800k tokens — the core genuinely ignores that stretch, so it is my turn to cover it.
+Use hooks that really exist, not imaginary ones. Across versions I replaced every "assumed-but-unverified" hook with hooks DSH actually supports.
+There is also a clumsy footnote from my past. When building failure detection, I did not think the recognition logic through (the DSH core marks isError only for infrastructure errors; command-level failures were being treated as success), and after mounting and testing I discovered it never fired. Only after asking about DSH itself did I find the problem and go fix it.
 
-这一切让我最深的体会就是：一个插件真正值钱的，不是"我有个好点子"，而是"我搞清楚了平台边界"，什么不要做什么要做该怎么做。
+The deepest lesson of all this: what makes a plugin truly valuable is not "I had a good idea", but "I understood the platform's boundaries" — what not to do, what to do, and how.
 
-不啰嗦心路历程了，讲点实测效果
-text2img这块，我实测过几个单次样本，比方说一段2582字的长文本，本来要1530token，转成图后只用了430token，省了近72%，又比方说6,437字长文本，转换后仅724字摘要，原文是摘要的近九倍长。
-但坦白说，我当时真正的判断是"会话越长越省"：原文转成图、换一段精炼摘要，后面每轮上下文就不必再带那篇长原文了。因此单次看数据不错，但到了长会话才展神威。 可我没那么多时间慢慢跑长会话，只测了单次，就把这俩插件（还有一个是dsh-behavior-enhancer）分给了几个朋友，邀请他们在日常使用里跟我一起观察长会话到底省多少，后续还会继续扩大测试群体，等样本够了，我再补更大范围的数据统计，这边也十分欢迎大家参与测试并提出建议。
-另外我想强调一点，text2img模块只对真正的自然语言散文转图。代码、JSON、配置文件，我不敢碰，转图再OCR真的会毁掉那些精确内容。为方便，我给了用户一个"强制转图"的选项（针对结构性强的内容），但我已明确提示不推荐。
+Enough of the journey; here are measured results.
+For text2img, in several single-shot samples I measured, a 2,582-character long text that would take 1,530 tokens used only 430 tokens after conversion — about 72% saved; another 6,437-character text became a 724-character summary — the original was nearly nine times the summary.
+But frankly my real judgment at the time was "the longer the session, the more it saves": once the original becomes an image plus a tight summary, later turns no longer carry the long text. So single-shot numbers look nice, but the real power shows in long sessions. I did not have time to run long sessions myself — I only tested single shots — and then shared the two plugins (the other one is dsh-behavior-enhancer) with friends, inviting them to observe with me how much long sessions actually save in daily use. I will keep widening the test group; when the samples are enough, I will add broader statistics. Everyone is welcome to test and give feedback.
+One more thing to stress: the text2img module converts only genuine natural-language prose to images. Code, JSON, configuration files — I dare not touch them; rendering to an image and OCR-ing back really does destroy precise content. For convenience I gave users a "force convert" option (for strongly structural content), but I clearly mark it as not recommended.
 
-toolTrim和mcpLazy我已提到过，效果大家都很熟悉我就不细讲了。
+I already covered toolTrim and mcpLazy; everyone knows the effects, so I will not elaborate.
 
-其余模块，outputLadder合并了v1时期的compress、sample、pruning三个模块，使工具输出在"出生点"分流一次，错误留摘要、JSON/CSV 结构压缩、shell 采样，替换的话，要么更简短，要么不换。
-cache只对"纯函数型"工具缓存。写操作或有时效性的工具（web 搜索、发消息等）不缓存。
-fileDiff还算感受直观，它记文件哈希，第二次读即知变没变。变了发 diff，没变就折叠，分段读要躲开，免得误判成"变了"。
-而compactionDriver，由于dsh核心设定的阈值0.8太高，我就改成0.45了，让压缩在长会话里更易于触发，原文留在日志里，能回放。
-monitor功能很简单，它负责算真实的缓存命中率（缓存命中 / (输入+缓存命中)），长会话常态 97–99.3%。
+The remaining modules: outputLadder merged the v1-era compress, sample, and pruning modules so tool output is routed once at its birthplace — errors keep a summary, JSON/CSV gets structure-aware compression, shell output gets sampling; a replacement happens only when it is shorter, otherwise nothing changes.
+cache only caches "pure-function" tools. Write operations or time-sensitive tools (web search, sending messages, etc.) are not cached.
+fileDiff feels quite intuitive: it records file hashes, so a second read immediately knows whether the file changed. Changed → send a diff; unchanged → collapse. Segmented reads are skipped to avoid false "changed" judgments.
+For compactionDriver, since the DSH core sets the threshold at 0.8 — too high — I changed it to 0.45 so compaction triggers more readily in long sessions, with the originals kept in logs and replayable.
+monitor is simple: it computes the real cache hit rate (cache hits / (input + cache hits)); long sessions typically sit at 97–99.3%.
 
-简言之，这插件办的事就一件：给大家省token。
-我是真心喜爱DeepSeek，才为此费心费力。插件代码都开源了（PowerShell里dsh plugin --profile web add ./dsh-token-optimizer就能安装了，详细指引请看https://github.com/Zoria-Lind/dsh-token-optimizer），你要是也觉得有点意思，拿去用；要是官方看到了，请多考虑考虑，在线求功能收编。
+In short, this plugin does one thing: save tokens for everyone.
+I truly love DeepSeek, which is why I put in this effort. The code is open source (in PowerShell, `dsh plugin --profile web add ./dsh-token-optimizer` installs it; see https://github.com/Zoria-Lind/dsh-token-optimizer for details). If you find it interesting, use it; and if the official team sees this — please consider absorbing the functionality. Officially begging for a merge.
