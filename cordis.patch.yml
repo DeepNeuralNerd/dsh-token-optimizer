@@ -5,7 +5,7 @@
     - id: token-optimizer
       name: '@zoria-lind/dsh-token-optimizer'
       config:
-        # T4 分层压缩(默认关;启用时 src/index.js 会自动旁路 compactionDriver 的旧 0.45 阈值路径)
+        # T4 layered compaction (off by default; when enabled, src/index.js automatically bypasses compactionDriver's legacy 0.45 threshold path)
         layeredCompact:
           enabled: false
           lowRatio: 0.4
@@ -16,7 +16,7 @@
           sessionWindowFallback: 262144
         toolTrim:
           enabled: true
-          # 不再维护易过期的内置工具白名单；未配置 allow 时保留新工具。
+          # No more easy-to-stale built-in tool allowlists; new tools are kept when allow is not configured.
           mcpLazy: true
         cache:
           enabled: false
